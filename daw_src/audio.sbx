@@ -1,0 +1,194 @@
+# Audio sprite: transport clock, note scheduler and voice clones.
+#
+# Sounds: 1..60  melodic instruments (6 slots each, round robin)
+#         61..90 drum kit (3 slots per drum)
+#         91 / 92 metronome hi / lo
+
+# voice parameters (copied into each clone)
+var v_snd, v_pe, v_vol, v_pan, v_dur, v_hold, v_rel, v_gen, v_end, v_v
+# transport
+var a_t0, a_pos0, a_last, a_now, a_bpm, a_was, a_end, a_L
+# scratch
+var tg_inst, tg_row, f_i, f_s, f_n, ss_c, ss_cs, ss_P, ss_L, mt_k, q_i
+list rr, rr_d
+
+when flag:
+    hide()
+    setvolume(100)
+    voices = 0
+    a_was = 0
+    rr.clear()
+    repeat 11:
+        rr.add(0)
+    rr_d.clear()
+    repeat NDRUM:
+        rr_d.add(0)
+    forever:
+        audio_tick()
+
+proc audio_tick():
+    if playing == 1:
+        if a_was == 0 or seek_req == 1 or bpm != a_bpm:
+            a_t0 = timer
+            a_pos0 = song_pos
+            a_last = song_pos
+            a_bpm = bpm
+            seek_req = 0
+            if a_was == 0:
+                # notes exactly on the start position must fire too
+                a_last = song_pos - 0.001
+            a_was = 1
+        a_now = a_pos0 + (timer - a_t0) * bpm * PPQ / 60
+        advance()
+    else:
+        if a_was == 1:
+            a_was = 0
+            gen += 1
+    play_queue()
+
+# move the clock from a_last to a_now, handling pattern / loop wrap-around
+proc advance():
+    if song_mode == 0:
+        if cur_pat < 1 or cur_pat > p_len.len:
+            song_pos = a_now
+            a_last = a_now
+            return
+        a_L = p_len[cur_pat]
+        if a_last >= a_L:
+            # the pattern got shorter (or changed) while playing
+            a_end = a_last - (a_last % a_L)
+            a_pos0 -= a_end
+            a_now -= a_end
+            a_last -= a_end
+        if a_now >= a_L:
+            sched(a_last, a_L)
+            a_pos0 -= a_L
+            a_now -= a_L
+            a_last = 0
+        sched(a_last, a_now)
+    else:
+        a_end = 0
+        for ss_c = 1 to c_track.len:
+            ss_L = c_start[ss_c] * BAR + p_len[c_pat[ss_c]]
+            if ss_L > a_end:
+                a_end = ss_L
+        if loop_on == 1 and loop_e > loop_s and a_last < loop_e * BAR and a_now >= loop_e * BAR:
+            sched(a_last, loop_e * BAR)
+            a_L = (loop_e - loop_s) * BAR
+            a_pos0 -= a_L
+            a_now -= a_L
+            a_last = loop_s * BAR
+        elif loop_on == 0 and a_end > 0 and a_now >= a_end and a_last < a_end:
+            sched(a_last, a_end)
+            playing = 0
+            song_pos = play_marker
+            a_was = 0
+            gen += 1
+            return
+        sched(a_last, a_now)
+    song_pos = a_now
+    a_last = a_now
+
+proc sched(a, b):
+    if b <= a:
+        return
+    metro(a, b)
+    if song_mode == 0:
+        fire_pat(cur_pat, a, b, p_track[cur_pat])
+    else:
+        for ss_c = 1 to c_track.len:
+            ss_P = c_pat[ss_c]
+            ss_cs = c_start[ss_c] * BAR
+            ss_L = p_len[ss_P]
+            if ss_cs < b and ss_cs + ss_L > a:
+                fire_pat(ss_P, max(a, ss_cs) - ss_cs, min(b, ss_cs + ss_L) - ss_cs, c_track[ss_c])
+
+proc fire_pat(P, a, b, T):
+    if t_mute[T] == 1 or (any_solo == 1 and t_solo[T] != 1):
+        return
+    f_i = p_first[P]
+    repeat p_count[P]:
+        f_s = n_start[f_i]
+        if f_s % 24 == 12:
+            f_s += swing * 6 / 100
+        if f_s >= a and f_s < b:
+            trigger(T, n_pitch[f_i], n_vel[f_i], n_len[f_i] * 60 / (bpm * PPQ), 0)
+        f_i += 1
+
+proc metro(a, b):
+    if metro_on != 1:
+        return
+    mt_k = ceil(a / PPQ) * PPQ
+    if mt_k < b:
+        if mt_k % BAR == 0:
+            v_snd = 91
+        else:
+            v_snd = 92
+        v_pe = 0
+        v_pan = 0
+        v_vol = master * 0.8
+        v_dur = 0.15
+        v_hold = 0
+        v_rel = 0
+        v_gen = gen
+        voices += 1
+        clone()
+
+proc play_queue():
+    repeat q_trk.len:
+        trigger(q_trk[1], q_pitch[1], q_vel[1], q_dur[1], q_hold[1])
+        q_trk.delete(1)
+        q_pitch.delete(1)
+        q_vel.delete(1)
+        q_dur.delete(1)
+        q_hold.delete(1)
+
+proc trigger(T, pitch, vel, dur, hold):
+    if voices >= MAXVOICES:
+        return
+    tg_inst = t_inst[T]
+    v_vol = master * t_vol[T] * vel / 12700
+    v_pan = t_pan[T]
+    v_rel = t_rel[T] / 1000
+    v_hold = hold
+    if tg_inst == DRUMKIT:
+        tg_row = round(pitch)
+        if tg_row < 0 or tg_row > NDRUM - 1:
+            return
+        rr_d[tg_row + 1] = rr_d[tg_row + 1] % DCOPIES + 1
+        v_snd = 60 + tg_row * DCOPIES + rr_d[tg_row + 1]
+        v_pe = t_tr[T] * 10 + t_det[T] / 10
+        v_dur = 3
+        v_hold = 0
+        v_rel = 0
+    else:
+        if tg_inst < 1 or tg_inst > 10:
+            return
+        rr[tg_inst] = rr[tg_inst] % COPIES + 1
+        v_snd = (tg_inst - 1) * COPIES + rr[tg_inst]
+        v_pe = (pitch + t_tr[T] - inst_root[tg_inst]) * 10 + t_det[T] / 10
+        v_dur = dur
+    v_pe = clamp(v_pe, -360, 360)
+    if v_vol > t_meter[T]:
+        t_meter[T] = v_vol
+    v_gen = gen
+    voices += 1
+    clone()
+
+when clone:
+    setvolume(v_vol)
+    setpan(v_pan)
+    setpitch(v_pe)
+    playsound(v_snd)
+    v_end = timer + v_dur
+    if v_hold > 0:
+        waituntil(not held.has(v_hold) or v_gen != gen or timer > v_end + 30)
+    else:
+        waituntil(timer > v_end or v_gen != gen)
+    if v_rel > 0.03 and v_gen == gen:
+        v_end = timer + v_rel
+        until timer > v_end or v_gen != gen:
+            setvolume(v_vol * (v_end - timer) / v_rel)
+    setvolume(0)
+    voices -= 1
+    deleteclone()

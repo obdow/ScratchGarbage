@@ -1,0 +1,744 @@
+# UI core: text + pen primitives, input, song data operations, save codes, undo.
+
+# ---- pen text engine interface
+extern te_draw(t, x, y) = "draw text %s at x: %s y: %s"
+extern te_draw_wrap(t, x, y, w) = "draw text %s at x: %s y: %s wrap width: %s"
+extern te_measure(t, w) = "measure text %s wrap width: %s"
+global te_size = "TE size", te_align = "TE align", te_valign = "TE vertical align"
+global te_hue = "TE hue", te_bright = "TE brightness", te_alpha = "TE transparency"
+global te_w = "TE width", te_nl = "TE newline", te_lsp = "TE line spacing"
+
+# ---- layout
+const MX0 = -440          # main area left
+const MY0 = 316           # main area top (below the top bar)
+const MYB = -336          # main area bottom (above the status bar)
+const MW = 1080
+const CY0 = 286           # content top (below a view's header strip)
+
+# ---- colours
+const C_BG = "#15161b"
+const C_PANEL = "#1e2026"
+const C_PANEL2 = "#25282f"
+const C_BTN = "#2c3039"
+const C_BTNH = "#3a3f4b"
+const C_ACC = "#ff9f43"
+const C_LINE = "#25272e"
+const C_LINE2 = "#33363f"
+const C_LINE3 = "#4a4e5a"
+const C_GREEN = "#3ddc84"
+const C_RED = "#ff4f64"
+const C_WHITE = "#ffffff"
+const C_DARK = "#101116"
+
+# text colour codes (rows of tc_h / tc_b / tc_a)
+const TX_WHITE = 1
+const TX_DIM = 2
+const TX_FAINT = 3
+const TX_ACC = 4
+const TX_GREEN = 5
+const TX_RED = 6
+const TX_CYAN = 7
+const TX_DARK = 8
+const TX_YELLOW = 9
+const TX_TRACK = 10       # + track number (11..18)
+
+const VIEW_PLAYLIST = 1
+const VIEW_PIANO = 2
+const VIEW_DRUMS = 3
+const VIEW_MIXER = 4
+
+list tr_r, tr_g, tr_b, tc_h, tc_b, tc_a, tcol, tcold, snap_val, snap_lbl, kb_keys, kb_state, kb_rs, kb_pitch
+list u_stack, r_stack, tok
+list g_idx, g_s, g_p, g_l, cellv
+
+# input
+var mx, my, md, mprev, press, rel, click, pclick, dbl, last_click_t, lcx, lcy, shift, ctrl
+var drag, drag_moved, drag_t, drag_v0, drag_mx0, drag_my0, drag_off, drag_x, drag_y
+var scroll_v, scroll_h, k_prev_space, k_prev_del, k_prev_z, k_prev_y, k_prev_minus, k_prev_plus
+var k_prev_esc
+# ui state
+var view, sel_t, popup, popup_t, popup_x, popup_y, hint, toast, toast_t, ask_kind, ask_arg
+var fps, fps_n, fps_t, kb_oct, rec_on, qrec, serial, rec_pushed, help_page
+var pl_bw, pl_sx, pl_tool, pl_sel
+var pr_bw, pr_sx, pr_top, pr_tool, pr_snap, pr_len, pr_vel
+var ds_page, ds_accent
+# clipping rectangle for rect()
+var cl_x1, cl_x2, cl_y1, cl_y2
+# results / temps
+var ret, hit, hov, ser_out, rv, rd
+var r_al, r_ps, r_x1, r_x2, r_y, r_n, r_step, r_a, r_b, r_c, r_d
+var b_c, b_t, i_k, i_p, t_i, t_j, t_s, t_c, t_n, t_x, t_y, t_w, t_v
+var o_i, o_j, o_k, o_n, o_P, o_T, o_q
+var sz_i, sz_P, sz_T, sz_n, ds_i, ds_n, ds_P, ds_k, ds_c, ds_cur
+
+macro inside(x, y, w, h) = mx >= x and mx < x + w and my <= y and my > y - h
+macro track_col(T) = tcol[T]
+
+# ============================================================================ text
+
+proc txt(s, x, cy, size, col):
+    te_size = size
+    te_hue = tc_h[col]
+    te_bright = tc_b[col]
+    te_alpha = tc_a[col]
+    te_align = "left"
+    te_valign = "top"
+    te_draw(s, x, cy + 0.605 * size)
+
+proc txtc(s, cx, cy, size, col):
+    te_size = size
+    te_hue = tc_h[col]
+    te_bright = tc_b[col]
+    te_alpha = tc_a[col]
+    te_align = "center"
+    te_valign = "top"
+    te_draw(s, cx, cy + 0.605 * size)
+
+proc txtr(s, rx, cy, size, col):
+    te_size = size
+    te_hue = tc_h[col]
+    te_bright = tc_b[col]
+    te_alpha = tc_a[col]
+    te_align = "right"
+    te_valign = "top"
+    te_draw(s, rx, cy + 0.605 * size)
+
+proc txtw(s, x, y, w, size, col):
+    te_size = size
+    te_hue = tc_h[col]
+    te_bright = tc_b[col]
+    te_alpha = tc_a[col]
+    te_align = "left"
+    te_valign = "top"
+    te_draw_wrap(s, x, y, w)
+
+# ============================================================================ pen primitives
+
+proc clip_all():
+    cl_x1 = -640
+    cl_x2 = 640
+    cl_y1 = 360
+    cl_y2 = -360
+
+proc clip_to(x, y, w, h):
+    cl_x1 = x
+    cl_x2 = x + w
+    cl_y1 = y
+    cl_y2 = y - h
+
+# filled rectangle, (x, y) = top-left corner, clipped to the clip rectangle
+proc rect(x, y, w, h, c):
+    r_a = max(x, cl_x1)
+    r_b = min(x + w, cl_x2)
+    r_c = min(y, cl_y1)
+    r_d = max(y - h, cl_y2)
+    if r_b - r_a < 0.5 or r_c - r_d < 0.5:
+        return
+    pencolor(c)
+    fill(r_a, r_c, r_b - r_a, r_c - r_d)
+
+proc rect_t(x, y, w, h, c, alpha):
+    r_a = max(x, cl_x1)
+    r_b = min(x + w, cl_x2)
+    r_c = min(y, cl_y1)
+    r_d = max(y - h, cl_y2)
+    if r_b - r_a < 0.5 or r_c - r_d < 0.5:
+        return
+    pencolor(c)
+    r_al = alpha
+    fill_t(r_a, r_c, r_b - r_a, r_c - r_d)
+
+# fills with strokes along the long side (pen colour already set)
+proc fill(x, y, w, h):
+    if h <= w:
+        r_ps = min(h, 12)
+        pensize(r_ps)
+        r_x1 = x + r_ps / 2
+        r_x2 = x + w - r_ps / 2
+        r_y = y - r_ps / 2
+        r_n = ceil((h - r_ps) / (r_ps * 0.8))
+        r_step = 0
+        if r_n > 0:
+            r_step = (h - r_ps) / r_n
+        repeat r_n + 1:
+            goto(r_x1, r_y)
+            pendown()
+            goto(r_x2, r_y)
+            penup()
+            r_y -= r_step
+        if r_n > 0:
+            # smooth the scalloped ends
+            goto(r_x1, y - r_ps / 2)
+            pendown()
+            goto(r_x1, y - h + r_ps / 2)
+            penup()
+            goto(r_x2, y - r_ps / 2)
+            pendown()
+            goto(r_x2, y - h + r_ps / 2)
+            penup()
+    else:
+        r_ps = min(w, 12)
+        pensize(r_ps)
+        r_x1 = y - r_ps / 2
+        r_x2 = y - h + r_ps / 2
+        r_y = x + r_ps / 2
+        r_n = ceil((w - r_ps) / (r_ps * 0.8))
+        r_step = 0
+        if r_n > 0:
+            r_step = (w - r_ps) / r_n
+        repeat r_n + 1:
+            goto(r_y, r_x1)
+            pendown()
+            goto(r_y, r_x2)
+            penup()
+            r_y += r_step
+        if r_n > 0:
+            goto(x + r_ps / 2, r_x1)
+            pendown()
+            goto(x + w - r_ps / 2, r_x1)
+            penup()
+            goto(x + r_ps / 2, r_x2)
+            pendown()
+            goto(x + w - r_ps / 2, r_x2)
+            penup()
+
+# like fill() but strokes never overlap, so translucent colours stay even.
+# "pen down" draws a dot that the stroke would overlap, so that dot is made invisible.
+proc fill_t(x, y, w, h):
+    if h <= w:
+        r_n = ceil(h / 16)
+        r_ps = h / r_n
+        pensize(r_ps)
+        r_x1 = x + min(r_ps, w) / 2
+        r_x2 = x + w - min(r_ps, w) / 2
+        r_y = y - r_ps / 2
+        repeat r_n:
+            goto(r_x1, r_y)
+            pentransp(100)
+            pendown()
+            pentransp(r_al)
+            goto(r_x2, r_y)
+            penup()
+            r_y -= r_ps
+    else:
+        r_n = ceil(w / 16)
+        r_ps = w / r_n
+        pensize(r_ps)
+        r_x1 = y - min(r_ps, h) / 2
+        r_x2 = y - h + min(r_ps, h) / 2
+        r_y = x + r_ps / 2
+        repeat r_n:
+            goto(r_y, r_x1)
+            pentransp(100)
+            pendown()
+            pentransp(r_al)
+            goto(r_y, r_x2)
+            penup()
+            r_y += r_ps
+
+proc line(x1, y1, x2, y2, size, c):
+    pencolor(c)
+    pensize(size)
+    goto(x1, y1)
+    pendown()
+    goto(x2, y2)
+    penup()
+
+proc hline(x1, x2, y, c):
+    if y > cl_y1 or y < cl_y2:
+        return
+    pencolor(c)
+    pensize(1)
+    goto(max(x1, cl_x1), y)
+    pendown()
+    goto(min(x2, cl_x2), y)
+    penup()
+
+proc vline(x, y1, y2, c):
+    if x < cl_x1 or x > cl_x2:
+        return
+    pencolor(c)
+    pensize(1)
+    goto(x, min(y1, cl_y1))
+    pendown()
+    goto(x, max(y2, cl_y2))
+    penup()
+
+proc outline(x, y, w, h, c):
+    pencolor(c)
+    pensize(1)
+    goto(x, y)
+    pendown()
+    goto(x + w, y)
+    goto(x + w, y - h)
+    goto(x, y - h)
+    goto(x, y)
+    penup()
+
+proc pill(x, y, w, h, c):
+    pencolor(c)
+    pensize(h)
+    goto(x + h / 2, y - h / 2)
+    pendown()
+    goto(x + w - h / 2, y - h / 2)
+    penup()
+
+proc dot(x, y, size, c):
+    pencolor(c)
+    pensize(size)
+    goto(x, y)
+    pendown()
+    penup()
+
+# right-pointing triangle centred on (cx, cy)
+proc tri(cx, cy, s, c):
+    pencolor(c)
+    pensize(2)
+    t_y = cy + s / 2
+    repeat ceil(s / 1.5) + 1:
+        goto(cx - s / 2, t_y)
+        pendown()
+        goto(cx + s / 2, cy)
+        penup()
+        t_y -= 1.5
+        if t_y < cy - s / 2:
+            t_y = cy - s / 2
+
+# ============================================================================ widgets
+
+proc set_hover(x, y, w, h):
+    hov = 0
+    if drag == "" and inside(x, y, w, h):
+        hov = 1
+
+# state: 0 normal, 1 active, 2 disabled
+proc button(x, y, w, h, label, state):
+    hit = 0
+    set_hover(x, y, w, h)
+    if state == 1:
+        b_c = C_ACC
+        b_t = TX_DARK
+    elif state == 2:
+        b_c = C_BTN
+        b_t = TX_FAINT
+    elif hov == 1:
+        b_c = C_BTNH
+        b_t = TX_WHITE
+    else:
+        b_c = C_BTN
+        b_t = TX_WHITE
+    rect(x, y, w, h, b_c)
+    txtc(label, x + w / 2, y - h / 2, 10, b_t)
+    if hov == 1 and click == 1 and state != 2:
+        hit = 1
+        click = 0
+
+# button tinted with a custom colour when active
+proc button_c(x, y, w, h, label, on, c):
+    hit = 0
+    set_hover(x, y, w, h)
+    if on == 1:
+        rect(x, y, w, h, c)
+        txtc(label, x + w / 2, y - h / 2, 10, TX_DARK)
+    else:
+        if hov == 1:
+            rect(x, y, w, h, C_BTNH)
+        else:
+            rect(x, y, w, h, C_BTN)
+        txtc(label, x + w / 2, y - h / 2, 10, TX_WHITE)
+    if hov == 1 and click == 1:
+        hit = 1
+        click = 0
+
+# invisible hit area
+proc area(x, y, w, h):
+    hit = 0
+    set_hover(x, y, w, h)
+    if hov == 1 and click == 1:
+        hit = 1
+        click = 0
+
+# colour of track T faded towards the background colour (r, g, b); f = 0..1 -> ret
+proc mixc(T, f, r, g, b):
+    ret = floor(r + (tr_r[T] - r) * f) * 65536 + floor(g + (tr_g[T] - g) * f) * 256 + floor(b + (tr_b[T] - b) * f)
+
+proc say(msg):
+    toast = msg
+    toast_t = timer + 3
+
+# ============================================================================ input
+
+proc input():
+    mx = mouse_x
+    my = mouse_y
+    md = num(mouse_down)
+    press = 0
+    rel = 0
+    if md == 1 and mprev == 0:
+        press = 1
+    if md == 0 and mprev == 1:
+        rel = 1
+    mprev = md
+    click = press
+    pclick = 0
+    dbl = 0
+    if press == 1:
+        if timer - last_click_t < 0.35 and abs(mx - lcx) < 6 and abs(my - lcy) < 6:
+            dbl = 1
+        last_click_t = timer
+        lcx = mx
+        lcy = my
+    shift = num(key("shift"))
+    ctrl = num(key("control"))
+    if popup != "" and press == 1:
+        click = 0
+        pclick = 1
+
+# send a note to the audio engine
+proc play_note(T, pitch, vel, dur, hold):
+    q_trk.add(T)
+    q_pitch.add(pitch)
+    q_vel.add(vel)
+    q_dur.add(dur)
+    q_hold.add(hold)
+
+# ============================================================================ song data
+
+proc pat_new(T, bars):
+    o_n = 0
+    for o_i = 1 to p_track.len:
+        if p_track[o_i] == T:
+            o_n += 1
+    p_name.add(t_name[T] ~ " " ~ (o_n + 1))
+    p_len.add(bars * BAR)
+    p_track.add(T)
+    p_first.add(n_start.len + 1)
+    p_count.add(0)
+    ret = p_name.len
+    t_cur[T] = ret
+
+proc note_add(P, s, l, pitch, vel):
+    o_k = p_first[P] + p_count[P]
+    n_start.insert(o_k, s)
+    n_len.insert(o_k, l)
+    n_pitch.insert(o_k, pitch)
+    n_vel.insert(o_k, vel)
+    n_sel.insert(o_k, 0)
+    p_count[P] += 1
+    for o_q = P + 1 to p_len.len:
+        p_first[o_q] += 1
+    ret = o_k
+
+proc note_del(P, i):
+    n_start.delete(i)
+    n_len.delete(i)
+    n_pitch.delete(i)
+    n_vel.delete(i)
+    n_sel.delete(i)
+    p_count[P] -= 1
+    for o_q = P + 1 to p_len.len:
+        p_first[o_q] -= 1
+
+proc sel_clear():
+    for o_j = 1 to n_sel.len:
+        n_sel[o_j] = 0
+
+# delete every selected note of pattern P
+proc del_selected(P):
+    o_j = p_first[P] + p_count[P] - 1
+    repeat p_count[P]:
+        if n_sel[o_j] == 1:
+            note_del(P, o_j)
+        o_j -= 1
+
+# first pattern that belongs to track T (0 if none)
+proc first_pat_of(T):
+    ret = 0
+    for o_i = 1 to p_track.len:
+        if ret == 0 and p_track[o_i] == T:
+            ret = o_i
+
+proc pat_del(P):
+    o_n = p_count[P]
+    repeat o_n:
+        n_start.delete(p_first[P])
+        n_len.delete(p_first[P])
+        n_pitch.delete(p_first[P])
+        n_vel.delete(p_first[P])
+        n_sel.delete(p_first[P])
+    for o_q = P + 1 to p_len.len:
+        p_first[o_q] -= o_n
+    p_name.delete(P)
+    p_len.delete(P)
+    p_track.delete(P)
+    p_first.delete(P)
+    p_count.delete(P)
+    o_i = 1
+    until o_i > c_track.len:
+        if c_pat[o_i] == P:
+            c_track.delete(o_i)
+            c_start.delete(o_i)
+            c_pat.delete(o_i)
+        else:
+            if c_pat[o_i] > P:
+                c_pat[o_i] -= 1
+            o_i += 1
+    for o_T = 1 to NTRK:
+        if t_cur[o_T] == P:
+            t_cur[o_T] = 0
+        elif t_cur[o_T] > P:
+            t_cur[o_T] -= 1
+    for o_T = 1 to NTRK:
+        if t_cur[o_T] == 0:
+            first_pat_of(o_T)
+            t_cur[o_T] = ret
+    pl_sel = 0
+
+proc pat_dup(P):
+    o_P = P
+    pat_new(p_track[o_P], 1)
+    o_k = ret
+    p_len[o_k] = p_len[o_P]
+    p_name[o_k] = p_name[o_P] ~ " copy"
+    o_j = p_first[o_P]
+    repeat p_count[o_P]:
+        note_add(o_k, n_start[o_j], n_len[o_j], n_pitch[o_j], n_vel[o_j])
+        o_j += 1
+    ret = o_k
+    t_cur[p_track[o_P]] = o_k
+
+# step to the previous (dir -1) / next (dir 1) pattern of track T
+proc pat_cycle(T, dir):
+    o_k = t_cur[T]
+    o_i = o_k
+    repeat p_track.len:
+        o_i += dir
+        if o_i < 1:
+            o_i = p_track.len
+        if o_i > p_track.len:
+            o_i = 1
+        if p_track[o_i] == T:
+            t_cur[T] = o_i
+            return
+
+proc clip_del(c):
+    c_track.delete(c)
+    c_start.delete(c)
+    c_pat.delete(c)
+    pl_sel = 0
+
+proc clean_name(s):
+    ret = ""
+    o_i = 1
+    repeat min(strlen(s), 24):
+        if letter(o_i, s) == ",":
+            ret = ret ~ " "
+        else:
+            ret = ret ~ letter(o_i, s)
+        o_i += 1
+
+proc new_song():
+    bpm = 120
+    swing = 0
+    master = 80
+    loop_on = 0
+    loop_s = 0
+    loop_e = 4
+    song_mode = 1
+    t_name.clear()
+    t_inst.clear()
+    t_vol.clear()
+    t_pan.clear()
+    t_mute.clear()
+    t_solo.clear()
+    t_tr.clear()
+    t_det.clear()
+    t_rel.clear()
+    t_cur.clear()
+    p_name.clear()
+    p_len.clear()
+    p_track.clear()
+    p_first.clear()
+    p_count.clear()
+    n_start.clear()
+    n_len.clear()
+    n_pitch.clear()
+    n_vel.clear()
+    n_sel.clear()
+    c_track.clear()
+    c_start.clear()
+    c_pat.clear()
+    for o_T = 1 to NTRK:
+        t_name.add("Track " ~ o_T)
+        t_vol.add(75)
+        t_pan.add(0)
+        t_mute.add(0)
+        t_solo.add(0)
+        t_tr.add(0)
+        t_det.add(0)
+        t_rel.add(60)
+        t_cur.add(0)
+    t_inst.add(DRUMKIT)
+    t_inst.add(9)
+    t_inst.add(2)
+    t_inst.add(4)
+    t_inst.add(7)
+    t_inst.add(6)
+    t_inst.add(1)
+    t_inst.add(8)
+    t_name[1] = "Drums"
+    t_name[2] = "Bass"
+    t_name[3] = "Keys"
+    t_name[4] = "Lead"
+    t_name[5] = "Pad"
+    t_name[6] = "Pluck"
+    t_name[7] = "Piano"
+    t_name[8] = "Bells"
+    t_rel[1] = 0
+    t_rel[5] = 400
+
+# ============================================================================ save codes
+
+proc ser():
+    ser_out = "PDAW1," ~ bpm ~ "," ~ swing ~ "," ~ master ~ "," ~ loop_on ~ "," ~ loop_s ~ "," ~ loop_e ~ "," ~ song_mode
+    for sz_T = 1 to NTRK:
+        ser_out = ser_out ~ "," ~ t_name[sz_T] ~ "," ~ t_inst[sz_T] ~ "," ~ t_vol[sz_T] ~ "," ~ t_pan[sz_T] ~ "," ~ t_mute[sz_T] ~ "," ~ t_solo[sz_T] ~ "," ~ t_tr[sz_T] ~ "," ~ t_det[sz_T] ~ "," ~ t_rel[sz_T] ~ "," ~ t_cur[sz_T]
+    ser_out = ser_out ~ "," ~ p_name.len
+    for sz_P = 1 to p_name.len:
+        ser_out = ser_out ~ "," ~ p_name[sz_P] ~ "," ~ p_len[sz_P] ~ "," ~ p_track[sz_P] ~ "," ~ p_count[sz_P]
+        sz_i = p_first[sz_P]
+        repeat p_count[sz_P]:
+            ser_out = ser_out ~ "," ~ n_start[sz_i] ~ "," ~ n_len[sz_i] ~ "," ~ n_pitch[sz_i] ~ "," ~ n_vel[sz_i]
+            sz_i += 1
+    ser_out = ser_out ~ "," ~ c_track.len
+    for sz_i = 1 to c_track.len:
+        ser_out = ser_out ~ "," ~ c_track[sz_i] ~ "," ~ c_start[sz_i] ~ "," ~ c_pat[sz_i]
+    ser_out = ser_out ~ ",END"
+
+# read the next token into rv
+proc rdn():
+    rv = tok[rd]
+    rd += 1
+
+# load a save code; ret = 1 on success
+proc deser(src):
+    ret = 0
+    tok.clear()
+    ds_cur = ""
+    ds_i = 1
+    repeat strlen(src):
+        ds_c = letter(ds_i, src)
+        if ds_c == ",":
+            tok.add(ds_cur)
+            ds_cur = ""
+        else:
+            ds_cur = ds_cur ~ ds_c
+        ds_i += 1
+    tok.add(ds_cur)
+    if not (tok[1] == "PDAW1") or not (tok[tok.len] == "END"):
+        return
+    # header 8 + tracks 80 + pattern count
+    if tok.len < 90:
+        return
+    new_song()
+    rd = 2
+    rdn()
+    bpm = clamp(rv, 40, 300)
+    rdn()
+    swing = clamp(rv, 0, 100)
+    rdn()
+    master = clamp(rv, 0, 100)
+    rdn()
+    loop_on = rv
+    rdn()
+    loop_s = rv
+    rdn()
+    loop_e = rv
+    rdn()
+    song_mode = rv
+    for ds_k = 1 to NTRK:
+        rdn()
+        t_name[ds_k] = rv
+        rdn()
+        t_inst[ds_k] = rv
+        rdn()
+        t_vol[ds_k] = rv
+        rdn()
+        t_pan[ds_k] = rv
+        rdn()
+        t_mute[ds_k] = rv
+        rdn()
+        t_solo[ds_k] = rv
+        rdn()
+        t_tr[ds_k] = rv
+        rdn()
+        t_det[ds_k] = rv
+        rdn()
+        t_rel[ds_k] = rv
+        rdn()
+        t_cur[ds_k] = rv
+    rdn()
+    ds_P = rv
+    repeat ds_P:
+        rdn()
+        p_name.add(rv)
+        rdn()
+        p_len.add(rv)
+        rdn()
+        p_track.add(rv)
+        p_first.add(n_start.len + 1)
+        rdn()
+        ds_n = rv
+        p_count.add(ds_n)
+        repeat ds_n:
+            rdn()
+            n_start.add(rv)
+            rdn()
+            n_len.add(rv)
+            rdn()
+            n_pitch.add(rv)
+            rdn()
+            n_vel.add(rv)
+            n_sel.add(0)
+    rdn()
+    repeat rv:
+        rdn()
+        c_track.add(rv)
+        rdn()
+        c_start.add(rv)
+        rdn()
+        c_pat.add(rv)
+    for ds_k = 1 to NTRK:
+        if t_cur[ds_k] > p_name.len:
+            t_cur[ds_k] = 0
+    pl_sel = 0
+    ret = 1
+
+# ============================================================================ undo
+
+proc undo_push():
+    ser()
+    u_stack.add(ser_out)
+    if u_stack.len > 40:
+        u_stack.delete(1)
+    r_stack.clear()
+
+proc undo():
+    if u_stack.len == 0:
+        say("Nothing to undo")
+        return
+    ser()
+    r_stack.add(ser_out)
+    deser(u_stack[u_stack.len])
+    u_stack.delete(u_stack.len)
+    say("Undo")
+
+proc redo():
+    if r_stack.len == 0:
+        say("Nothing to redo")
+        return
+    ser()
+    u_stack.add(ser_out)
+    deser(r_stack[r_stack.len])
+    r_stack.delete(r_stack.len)
+    say("Redo")

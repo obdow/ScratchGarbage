@@ -1,0 +1,793 @@
+# UI main loop, keyboard, transport, top bar, sidebar, status bar, popups, prompts.
+
+list kb_np, nn
+var rp, rp_L, m_i, m_y, m_T, m_P, m_x, m_w, m_h, m_v, m_s, m_ok, snap, pclick2
+
+when flag:
+    ui_init()
+    forever:
+        ui_frame()
+        if ask_kind != "":
+            do_ask()
+
+# the mouse wheel arrives as up/down arrow presses
+when key "up arrow":
+    scroll_v -= 1
+
+when key "down arrow":
+    scroll_v += 1
+
+when key "left arrow":
+    scroll_h -= 1
+
+when key "right arrow":
+    scroll_h += 1
+
+proc ui_init():
+    hide()
+    point(90)
+    clip_all()
+    init_tables()
+    tc_h.clear()
+    tc_b.clear()
+    tc_a.clear()
+    # 1 white, 2 dim, 3 faint, 4 accent, 5 green, 6 red, 7 cyan, 8 dark, 9 yellow
+    add_tc(0, 100, 0)
+    add_tc(0, 100, 42)
+    add_tc(0, 100, 66)
+    add_tc(8, 12, 0)
+    add_tc(33, 30, 0)
+    add_tc(0, 25, 0)
+    add_tc(52, 40, 0)
+    add_tc(0, -100, 10)
+    add_tc(15, 30, 0)
+    add_tc(0, 100, 0)
+    # 11..18 track colours
+    add_tc(0, 38, 0)
+    add_tc(7, 35, 0)
+    add_tc(14, 35, 0)
+    add_tc(33, 38, 0)
+    add_tc(45, 35, 0)
+    add_tc(58, 40, 0)
+    add_tc(72, 45, 0)
+    add_tc(91, 45, 0)
+    tcol.clear()
+    tcol.add("#ff6b6b")
+    tcol.add("#ffa94d")
+    tcol.add("#ffd43b")
+    tcol.add("#69db7c")
+    tcol.add("#38d9a9")
+    tcol.add("#4dabf7")
+    tcol.add("#9775fa")
+    tcol.add("#f783ac")
+    tr_r.clear()
+    tr_g.clear()
+    tr_b.clear()
+    tr_r.add(255)
+    tr_g.add(107)
+    tr_b.add(107)
+    tr_r.add(255)
+    tr_g.add(169)
+    tr_b.add(77)
+    tr_r.add(255)
+    tr_g.add(212)
+    tr_b.add(59)
+    tr_r.add(105)
+    tr_g.add(219)
+    tr_b.add(124)
+    tr_r.add(56)
+    tr_g.add(217)
+    tr_b.add(169)
+    tr_r.add(77)
+    tr_g.add(171)
+    tr_b.add(247)
+    tr_r.add(151)
+    tr_g.add(117)
+    tr_b.add(250)
+    tr_r.add(247)
+    tr_g.add(131)
+    tr_b.add(172)
+    tcold.clear()
+    tcold.add("#4a2a30")
+    tcold.add("#4a3527")
+    tcold.add("#4a4226")
+    tcold.add("#2c4230")
+    tcold.add("#1f4038")
+    tcold.add("#243a4f")
+    tcold.add("#33295a")
+    tcold.add("#4c2a3c")
+    snap_val.clear()
+    snap_lbl.clear()
+    add_snap(12, "1/16")
+    add_snap(6, "1/32")
+    add_snap(24, "1/8")
+    add_snap(48, "1/4")
+    add_snap(16, "1/8 T")
+    add_snap(8, "1/16 T")
+    add_snap(192, "BAR")
+    add_snap(1, "OFF")
+    nn.clear()
+    nn.add("C")
+    nn.add("C#")
+    nn.add("D")
+    nn.add("D#")
+    nn.add("E")
+    nn.add("F")
+    nn.add("F#")
+    nn.add("G")
+    nn.add("G#")
+    nn.add("A")
+    nn.add("A#")
+    nn.add("B")
+    kb_keys.clear()
+    kb_pitch.clear()
+    kb_state.clear()
+    kb_rs.clear()
+    kb_np.clear()
+    m_s = "zsxdcvgbhnjmq2w3er5t6y7ui9o0p"
+    for m_i = 1 to 29:
+        kb_keys.add(letter(m_i, m_s))
+        kb_pitch.add(m_i - 1)
+        kb_state.add(0)
+        kb_rs.add(-1)
+        kb_np.add(0)
+    view = VIEW_PLAYLIST
+    sel_t = 1
+    popup = ""
+    drag = ""
+    ask_kind = ""
+    hint = ""
+    toast = ""
+    toast_t = 0
+    pl_bw = 40
+    pl_sx = 0
+    pl_tool = 1
+    pl_sel = 0
+    pr_bw = 64
+    pr_sx = 0
+    pr_top = 84
+    pr_tool = 1
+    pr_snap = 1
+    pr_len = 24
+    pr_vel = 100
+    ds_page = 0
+    ds_accent = 0
+    kb_oct = 4
+    rec_on = 0
+    qrec = 1
+    serial = 0
+    rec_pushed = 0
+    playing = 0
+    song_pos = 0
+    play_marker = 0
+    seek_req = 0
+    metro_on = 0
+    gen = 0
+    mprev = 0
+    scroll_v = 0
+    scroll_h = 0
+    fps = 60
+    fps_n = 0
+    fps_t = timer
+    q_trk.clear()
+    q_pitch.clear()
+    q_vel.clear()
+    q_dur.clear()
+    q_hold.clear()
+    held.clear()
+    t_meter.clear()
+    repeat NTRK:
+        t_meter.add(0)
+    u_stack.clear()
+    r_stack.clear()
+    save_code.clear()
+    save_code.hide()
+    deser(DEMO_SONG)
+    if ret != 1:
+        new_song()
+    say("Welcome to Pen DAW!  Press SPACE to play the demo song.  Click HELP for all shortcuts.")
+
+proc add_tc(h, b, a):
+    tc_h.add(h)
+    tc_b.add(b)
+    tc_a.add(a)
+
+proc add_snap(v, l):
+    snap_val.add(v)
+    snap_lbl.add(l)
+
+proc ui_frame():
+    input()
+    keys()
+    any_solo = 0
+    for m_i = 1 to NTRK:
+        if t_solo[m_i] == 1:
+            any_solo = 1
+        t_meter[m_i] = t_meter[m_i] * 0.88
+    if sel_t < 1 or sel_t > NTRK:
+        sel_t = 1
+    cur_pat = t_cur[sel_t]
+    snap = snap_val[pr_snap]
+    clear()
+    costume("_fence")
+    clip_all()
+    hint = ""
+    if view == VIEW_PLAYLIST:
+        view_playlist()
+    elif view == VIEW_PIANO:
+        view_piano()
+    elif view == VIEW_DRUMS:
+        view_drums()
+    else:
+        view_mixer()
+    clip_all()
+    draw_sidebar()
+    draw_topbar()
+    draw_status()
+    draw_popup()
+    if rel == 1:
+        drag = ""
+    scroll_v = 0
+    scroll_h = 0
+    fps_n += 1
+    if timer > fps_t + 1:
+        fps = fps_n
+        fps_n = 0
+        fps_t = timer
+
+# ============================================================================ keyboard
+
+proc keys():
+    m_v = num(key("space"))
+    if m_v == 1 and k_prev_space == 0 and popup == "":
+        toggle_play()
+    k_prev_space = m_v
+    m_v = num(key("delete") or key("backspace"))
+    if m_v == 1 and k_prev_del == 0 and popup == "":
+        delete_selection()
+    k_prev_del = m_v
+    m_v = num(key("z"))
+    if m_v == 1 and k_prev_z == 0 and ctrl == 1:
+        if shift == 1:
+            redo()
+        else:
+            undo()
+    k_prev_z = m_v
+    m_v = num(key("y"))
+    if m_v == 1 and k_prev_y == 0 and ctrl == 1:
+        redo()
+    k_prev_y = m_v
+    m_v = num(key("-"))
+    if m_v == 1 and k_prev_minus == 0 and ctrl == 0:
+        kb_oct = max(0, kb_oct - 1)
+        say("Keyboard octave " ~ kb_oct)
+    k_prev_minus = m_v
+    m_v = num(key("="))
+    if m_v == 1 and k_prev_plus == 0 and ctrl == 0:
+        kb_oct = min(7, kb_oct + 1)
+        say("Keyboard octave " ~ kb_oct)
+    k_prev_plus = m_v
+    m_v = num(key("escape"))
+    if m_v == 1 and k_prev_esc == 0:
+        close_popup()
+        sel_clear()
+    k_prev_esc = m_v
+    qwerty()
+
+proc qwerty():
+    for m_i = 1 to 29:
+        m_v = 0
+        if ctrl == 0 and popup == "":
+            m_v = num(key(kb_keys[m_i]))
+        if m_v == 1 and kb_state[m_i] == 0:
+            serial += 1
+            held.add(serial)
+            kb_state[m_i] = serial
+            if t_inst[sel_t] == DRUMKIT:
+                kb_np[m_i] = (m_i - 1) % NDRUM
+            else:
+                kb_np[m_i] = (kb_oct + 1) * 12 + kb_pitch[m_i]
+            play_note(sel_t, kb_np[m_i], 100, 8, serial)
+            kb_rs[m_i] = -1
+            if rec_on == 1 and playing == 1:
+                rec_start(m_i)
+        elif m_v == 0 and kb_state[m_i] != 0:
+            m_y = held.index(kb_state[m_i])
+            if m_y > 0:
+                held.delete(m_y)
+            kb_state[m_i] = 0
+            if kb_rs[m_i] >= 0 and rec_on == 1 and playing == 1:
+                rec_end(m_i)
+
+# position inside the current pattern for recording -> rp (-1 if none)
+proc rec_pos():
+    rp = -1
+    if cur_pat < 1:
+        return
+    rp_L = p_len[cur_pat]
+    if song_mode == 0:
+        rp = song_pos % rp_L
+        return
+    for m_y = 1 to c_track.len:
+        if c_pat[m_y] == cur_pat and c_start[m_y] * BAR <= song_pos and song_pos < c_start[m_y] * BAR + rp_L:
+            rp = song_pos - c_start[m_y] * BAR
+    if rp < 0:
+        rp = song_pos % rp_L
+
+proc rec_start(k):
+    if cur_pat < 1:
+        if rec_pushed == 0:
+            undo_push()
+            rec_pushed = 1
+        pat_new(sel_t, 4)
+        cur_pat = ret
+    rec_pos()
+    kb_rs[k] = rp
+
+proc rec_end(k):
+    rec_pos()
+    if rp < 0:
+        return
+    m_s = kb_rs[k]
+    m_v = rp - m_s
+    if m_v <= 0:
+        m_v += rp_L
+    if qrec == 1 and snap > 1:
+        m_s = (round(m_s / snap) * snap) % rp_L
+        m_v = max(snap, round(m_v / snap) * snap)
+    m_v = max(m_v, 3)
+    if rec_pushed == 0:
+        undo_push()
+        rec_pushed = 1
+    note_add(cur_pat, m_s, m_v, kb_np[k], 100)
+
+# ============================================================================ transport
+
+proc toggle_play():
+    if playing == 1:
+        playing = 0
+    else:
+        if song_mode == 0 and cur_pat > 0:
+            song_pos = song_pos % p_len[cur_pat]
+        rec_pushed = 0
+        playing = 1
+
+proc stop_transport():
+    if playing == 0:
+        play_marker = 0
+        song_pos = 0
+    else:
+        playing = 0
+        song_pos = play_marker
+    if song_mode == 0:
+        song_pos = 0
+
+proc set_mode(m):
+    song_mode = m
+    if m == 0:
+        song_pos = 0
+    else:
+        song_pos = play_marker
+    seek_req = 1
+
+proc delete_selection():
+    if view == VIEW_PIANO and cur_pat > 0:
+        m_v = 0
+        m_i = p_first[cur_pat]
+        repeat p_count[cur_pat]:
+            m_v += n_sel[m_i]
+            m_i += 1
+        if m_v > 0:
+            undo_push()
+            del_selected(cur_pat)
+            say("Deleted " ~ m_v ~ " note(s)")
+    elif view == VIEW_PLAYLIST and pl_sel > 0:
+        undo_push()
+        clip_del(pl_sel)
+
+proc open_editor():
+    if t_inst[sel_t] == DRUMKIT:
+        view = VIEW_DRUMS
+    else:
+        view = VIEW_PIANO
+    pr_sx = 0
+    ds_page = 0
+
+proc close_popup():
+    if popup == "save":
+        save_code.hide()
+    popup = ""
+
+# ============================================================================ top bar
+
+proc draw_topbar():
+    rect(-640, 360, 1280, 44, C_PANEL)
+    hline(-640, 640, 316, C_LINE2)
+    txt("PEN", -626, 338, 17, TX_ACC)
+    txt("DAW", -588, 338, 17, TX_WHITE)
+    # transport
+    button_c(-536, 354, 36, 32, "", playing, C_GREEN)
+    if hit == 1:
+        toggle_play()
+    if hov == 1:
+        hint = "Play / pause  (SPACE)"
+    if playing == 1:
+        rect(-524, 345, 4, 14, C_DARK)
+        rect(-516, 345, 4, 14, C_DARK)
+    else:
+        tri(-517, 338, 13, C_GREEN)
+    button(-496, 354, 36, 32, "", 0)
+    if hit == 1:
+        stop_transport()
+    if hov == 1:
+        hint = "Stop - press twice to rewind to the start"
+    rect(-484, 344, 12, 12, C_WHITE)
+    button_c(-456, 354, 36, 32, "", rec_on, C_RED)
+    if hit == 1:
+        rec_on = 1 - rec_on
+        rec_pushed = 0
+    if hov == 1:
+        hint = "Record: while playing, notes you play on the computer keyboard go into the selected pattern"
+    if rec_on == 1:
+        dot(-438, 338, 13, C_DARK)
+    else:
+        dot(-438, 338, 13, C_RED)
+    button(-410, 354, 44, 32, "PAT", num(song_mode == 0))
+    if hit == 1:
+        set_mode(0)
+    if hov == 1:
+        hint = "Pattern mode: loop the selected track's pattern"
+    button(-364, 354, 50, 32, "SONG", num(song_mode == 1))
+    if hit == 1:
+        set_mode(1)
+    if hov == 1:
+        hint = "Song mode: play the playlist arrangement"
+    button(-306, 354, 48, 32, "LOOP", loop_on)
+    if hit == 1:
+        loop_on = 1 - loop_on
+    if hov == 1:
+        hint = "Loop the region marked on the playlist ruler (drag on the ruler to set it)"
+    button(-254, 354, 44, 32, "MET", metro_on)
+    if hit == 1:
+        metro_on = 1 - metro_on
+    if hov == 1:
+        hint = "Metronome click"
+    # tempo
+    button(-202, 354, 20, 32, "-", 0)
+    if hit == 1:
+        bpm = max(40, round(bpm) - 1)
+    rect(-180, 354, 74, 32, C_DARK)
+    txtc(round(bpm), -143, 344, 14, TX_WHITE)
+    txtc("BPM", -143, 328, 8, TX_FAINT)
+    area(-180, 354, 74, 32)
+    if hit == 1:
+        drag = "bpm"
+        drag_v0 = bpm
+        drag_my0 = my
+        drag_moved = 0
+    if hov == 1:
+        hint = "Tempo: drag up / down, or click to type a value"
+    button(-104, 354, 20, 32, "+", 0)
+    if hit == 1:
+        bpm = min(300, round(bpm) + 1)
+    if drag == "bpm":
+        if abs(my - drag_my0) > 2:
+            drag_moved = 1
+        if drag_moved == 1:
+            bpm = clamp(round(drag_v0 + (my - drag_my0) / 2), 40, 300)
+        if rel == 1 and drag_moved == 0:
+            ask_kind = "bpm"
+    # position
+    rect(-78, 354, 112, 32, C_DARK)
+    m_v = max(0, song_pos)
+    txtc((floor(m_v / BAR) + 1) ~ " . " ~ (floor((m_v % BAR) / PPQ) + 1) ~ " . " ~ (floor((m_v % PPQ) / 12) + 1), -22, 344, 14, TX_CYAN)
+    m_s = floor(m_v / PPQ * 60 / bpm * 10) / 10
+    m_y = floor(m_s / 60)
+    m_s = m_s - m_y * 60
+    if m_s < 10:
+        m_s = "0" ~ m_s
+    if song_mode == 1:
+        txtc("SONG  " ~ m_y ~ ":" ~ m_s, -22, 328, 8, TX_FAINT)
+    else:
+        txtc("PATTERN  " ~ m_y ~ ":" ~ m_s, -22, 328, 8, TX_FAINT)
+    # swing
+    rect(42, 354, 78, 32, C_DARK)
+    txtc(round(swing) ~ "%", 81, 344, 14, TX_WHITE)
+    txtc("SWING", 81, 328, 8, TX_FAINT)
+    area(42, 354, 78, 32)
+    if hit == 1:
+        drag = "swing"
+        drag_v0 = swing
+        drag_mx0 = mx
+        drag_my0 = my
+    if hov == 1:
+        hint = "Swing: drag to delay every second 16th note"
+    if drag == "swing":
+        swing = clamp(round(drag_v0 + (mx - drag_mx0) / 2 + (my - drag_my0) / 2), 0, 100)
+    # views
+    button(132, 354, 76, 32, "PLAYLIST", num(view == VIEW_PLAYLIST))
+    if hit == 1:
+        view = VIEW_PLAYLIST
+    button(210, 354, 84, 32, "PIANO ROLL", num(view == VIEW_PIANO))
+    if hit == 1:
+        view = VIEW_PIANO
+    button(296, 354, 62, 32, "DRUMS", num(view == VIEW_DRUMS))
+    if hit == 1:
+        view = VIEW_DRUMS
+    button(360, 354, 62, 32, "MIXER", num(view == VIEW_MIXER))
+    if hit == 1:
+        view = VIEW_MIXER
+    # edit / file
+    button(432, 354, 46, 32, "UNDO", 2 * num(u_stack.len == 0))
+    if hit == 1:
+        undo()
+    if hov == 1:
+        hint = "Undo (Ctrl+Z)"
+    button(480, 354, 46, 32, "REDO", 2 * num(r_stack.len == 0))
+    if hit == 1:
+        redo()
+    if hov == 1:
+        hint = "Redo (Ctrl+Y)"
+    button(534, 354, 32, 32, "NEW", 0)
+    if hit == 1:
+        playing = 0
+        undo_push()
+        new_song()
+        song_pos = 0
+        play_marker = 0
+        say("New project (UNDO brings the old one back)")
+    if hov == 1:
+        hint = "Start an empty project (undoable)"
+    button(568, 354, 34, 32, "SAVE", 0)
+    if hit == 1:
+        do_save()
+    if hov == 1:
+        hint = "Show the save code for this project"
+    button(604, 354, 34, 32, "LOAD", 0)
+    if hit == 1:
+        ask_kind = "load"
+    if hov == 1:
+        hint = "Load a save code"
+
+proc do_save():
+    ser()
+    save_code.clear()
+    m_i = 1
+    until m_i > strlen(ser_out):
+        m_s = ""
+        repeat min(120, strlen(ser_out) - m_i + 1):
+            m_s = m_s ~ letter(m_i, ser_out)
+            m_i += 1
+        save_code.add(m_s)
+    save_code.show()
+    popup = "save"
+
+# ============================================================================ sidebar
+
+proc draw_sidebar():
+    rect(-640, 316, 200, 652, C_PANEL)
+    vline(-440, 316, MYB, C_LINE2)
+    txt("TRACKS", -628, 304, 10, TX_FAINT)
+    for m_T = 1 to NTRK:
+        m_y = 292 - (m_T - 1) * 52
+        if m_T == sel_t:
+            rect(-636, m_y, 192, 50, C_PANEL2)
+        rect(-636, m_y, 4, 50, tcol[m_T])
+        button(-494, m_y - 6, 22, 18, "M", t_mute[m_T])
+        if hit == 1:
+            t_mute[m_T] = 1 - t_mute[m_T]
+        if hov == 1:
+            hint = "Mute " ~ t_name[m_T]
+        button_c(-468, m_y - 6, 22, 18, "S", t_solo[m_T], "#ffd43b")
+        if hit == 1:
+            t_solo[m_T] = 1 - t_solo[m_T]
+        if hov == 1:
+            hint = "Solo " ~ t_name[m_T]
+        txt(t_name[m_T], -624, m_y - 15, 13, TX_WHITE)
+        area(-626, m_y - 26, 140, 16)
+        if hit == 1:
+            sel_t = m_T
+            popup = "inst"
+            popup_t = m_T
+            popup_x = -438
+            popup_y = m_y
+        if hov == 1:
+            txt(inst_name[t_inst[m_T]] ~ "  >", -624, m_y - 34, 10, TX_ACC)
+            hint = "Click to change the instrument of " ~ t_name[m_T]
+        else:
+            txt(inst_name[t_inst[m_T]], -624, m_y - 34, 10, TX_DIM)
+        rect(-624, m_y - 44, 172, 3, C_DARK)
+        rect(-624, m_y - 44, min(172, t_meter[m_T] * 1.9), 3, tcol[m_T])
+        area(-636, m_y, 192, 50)
+        if hit == 1:
+            if dbl == 1 and sel_t == m_T:
+                ask_kind = "rename_t"
+                ask_arg = m_T
+            sel_t = m_T
+        if hov == 1 and hint == "":
+            hint = "Click to select, double-click to rename"
+    # pattern panel
+    m_P = t_cur[sel_t]
+    hline(-636, -444, -122, C_LINE2)
+    txt("PATTERN", -628, -134, 10, TX_FAINT)
+    txtr(t_name[sel_t], -450, -134, 10, TX_TRACK + sel_t)
+    button(-632, -146, 24, 24, "<", 0)
+    if hit == 1:
+        pat_cycle(sel_t, -1)
+    rect(-606, -146, 132, 24, C_DARK)
+    if m_P > 0:
+        txtc(p_name[m_P], -540, -158, 11, TX_WHITE)
+    else:
+        txtc("(no pattern)", -540, -158, 11, TX_FAINT)
+    area(-606, -146, 132, 24)
+    if hit == 1 and dbl == 1 and m_P > 0:
+        ask_kind = "rename_p"
+        ask_arg = m_P
+    if hov == 1:
+        hint = "The pattern being edited (and placed on the playlist). Double-click to rename"
+    button(-472, -146, 24, 24, ">", 0)
+    if hit == 1:
+        pat_cycle(sel_t, 1)
+    button(-632, -176, 60, 24, "NEW", 0)
+    if hit == 1:
+        undo_push()
+        if t_inst[sel_t] == DRUMKIT:
+            pat_new(sel_t, 1)
+        else:
+            pat_new(sel_t, 2)
+    button(-569, -176, 60, 24, "CLONE", 2 * num(m_P == 0))
+    if hit == 1:
+        undo_push()
+        pat_dup(m_P)
+    button(-506, -176, 58, 24, "DELETE", 2 * num(m_P == 0))
+    if hit == 1:
+        undo_push()
+        pat_del(m_P)
+        say("Pattern deleted (and its clips)")
+    txt("LENGTH", -628, -218, 10, TX_DIM)
+    button(-552, -206, 24, 24, "-", 2 * num(m_P == 0))
+    if hit == 1 and p_len[m_P] > BAR:
+        undo_push()
+        p_len[m_P] -= BAR
+    if m_P > 0:
+        txtc((p_len[m_P] / BAR) ~ " BAR", -500, -218, 11, TX_WHITE)
+    button(-472, -206, 24, 24, "+", 2 * num(m_P == 0))
+    if hit == 1 and p_len[m_P] < 16 * BAR:
+        undo_push()
+        p_len[m_P] += BAR
+    button(-632, -236, 92, 24, "RENAME", 2 * num(m_P == 0))
+    if hit == 1:
+        ask_kind = "rename_p"
+        ask_arg = m_P
+    button(-538, -236, 90, 24, "EDIT", 0)
+    if hit == 1:
+        open_editor()
+    hline(-636, -444, -270, C_LINE2)
+    txt("COMPUTER KEYBOARD", -628, -282, 10, TX_FAINT)
+    button(-632, -294, 24, 22, "-", 0)
+    if hit == 1:
+        kb_oct = max(0, kb_oct - 1)
+    txtc("OCTAVE " ~ kb_oct, -570, -305, 11, TX_WHITE)
+    button(-532, -294, 24, 22, "+", 0)
+    if hit == 1:
+        kb_oct = min(7, kb_oct + 1)
+    button(-500, -294, 52, 22, "QREC", qrec)
+    if hit == 1:
+        qrec = 1 - qrec
+    if hov == 1:
+        hint = "Quantize recorded notes to the piano roll snap"
+    txt("Z-M and Q-U rows play notes", -628, -324, 9, TX_FAINT)
+
+# ============================================================================ status bar
+
+proc draw_status():
+    rect(-640, MYB, 1280, 24, C_PANEL)
+    hline(-640, 640, MYB, C_LINE2)
+    if timer < toast_t:
+        txt(toast, -628, -348, 11, TX_ACC)
+    else:
+        txt(hint, -628, -348, 11, TX_DIM)
+    txtr("VOICES " ~ voices ~ "    " ~ fps ~ " FPS", 576, -348, 9, TX_FAINT)
+    button(584, -339, 52, 18, "HELP", num(popup == "help"))
+    if hit == 1:
+        popup = "help"
+
+# ============================================================================ popups
+
+proc draw_popup():
+    if popup == "":
+        return
+    pclick2 = pclick
+    if popup == "inst":
+        m_w = 170
+        m_h = 11 * 22 + 8
+        m_x = popup_x
+        m_y = max(popup_y, MYB + m_h + 4)
+        rect_t(m_x + 4, m_y - 4, m_w, m_h, "#000000", 50)
+        rect(m_x, m_y, m_w, m_h, C_PANEL2)
+        outline(m_x, m_y, m_w, m_h, C_LINE3)
+        for m_i = 1 to 11:
+            m_v = m_y - 4 - (m_i - 1) * 22
+            if inside(m_x, m_v, m_w, 22):
+                rect(m_x + 2, m_v, m_w - 4, 22, C_BTNH)
+                if pclick2 == 1:
+                    undo_push()
+                    t_inst[popup_t] = m_i
+                    pclick2 = 0
+                    popup = ""
+                    if m_i == DRUMKIT:
+                        play_note(popup_t, 0, 110, 0.5, 0)
+                    else:
+                        play_note(popup_t, 60, 100, 0.6, 0)
+            if m_i == t_inst[popup_t]:
+                txt(inst_name[m_i], m_x + 12, m_v - 11, 11, TX_ACC)
+            else:
+                txt(inst_name[m_i], m_x + 12, m_v - 11, 11, TX_WHITE)
+    elif popup == "help":
+        rect_t(-640, 360, 1280, 720, "#000000", 35)
+        rect(-420, 300, 840, 600, C_PANEL2)
+        outline(-420, 300, 840, 600, C_LINE3)
+        txt("PEN DAW", -396, 274, 22, TX_ACC)
+        txt("Quick guide", -280, 271, 14, TX_DIM)
+        txtw(HELP1, -396, 246, 380, 11, TX_WHITE)
+        txtw(HELP2, 10, 246, 390, 11, TX_WHITE)
+        txtc("click anywhere to close", 0, -282, 10, TX_FAINT)
+        if pclick2 == 1:
+            popup = ""
+            pclick2 = 0
+    elif popup == "save":
+        rect_t(-640, 360, 1280, 720, "#000000", 35)
+        rect(-400, 160, 800, 400, C_PANEL2)
+        outline(-400, 160, 800, 400, C_LINE3)
+        txt("SAVE CODE", -380, 138, 16, TX_ACC)
+        txtw("This project as text. Right-click the list > export to download it as a .txt file (in the TurboWarp editor), or click into an item to copy it. To load it again: right-click the list > import (or paste the code), then press LOAD and leave the box empty.", -380, 122, 760, 10, TX_DIM)
+        button(-60, -206, 120, 30, "CLOSE", 0)
+        if hit == 1 or pclick2 == 1 and inside(-60, -206, 120, 30):
+            close_popup()
+            pclick2 = 0
+    if pclick2 == 1:
+        if popup == "inst":
+            popup = ""
+
+const HELP1 = "TRANSPORT\nSPACE plays / pauses. STOP twice rewinds. PAT loops the selected track's pattern, SONG plays the playlist. LOOP repeats the region you drag on the playlist ruler. MET is a metronome, SWING delays every second 16th.\n\nPLAYLIST\nClick a lane to place that track's pattern, drag clips to move them, double-click a clip to edit it. The ERASE tool or SHIFT+click deletes. Click the ruler to set the start position. Mouse wheel / arrow keys scroll, - / + zoom.\n\nTRACKS\nClick to select, double-click to rename, click the instrument name to change it. M mutes, S solos. The PATTERN panel picks, creates, clones and resizes the selected track's patterns."
+const HELP2 = "PIANO ROLL\nDRAW: click to add a note, drag to move it, drag its right edge to resize. SELECT: drag a box around notes. ERASE or SHIFT+click deletes, DELETE removes the selection. Drag in the velocity lane to set velocities. Wheel scrolls pitch, left / right arrows scroll time, drag the ruler to pan.\n\nDRUMS\nClick steps to toggle them, drag to paint. ACCENT adds loud hits.\n\nCOMPUTER KEYBOARD\nZ S X D C V G B H N J M and Q 2 W 3 E R 5 T 6 Y 7 U play the selected track. - and = change octave. Turn on RECORD and play to record into the pattern.\n\nCtrl+Z undo, Ctrl+Y redo, ESC closes menus.\nSAVE shows a text code of the project, LOAD reads one back."
+
+# ============================================================================ prompts (run outside warp so "ask" can wait)
+
+proc nowarp do_ask():
+    if ask_kind == "bpm":
+        ask("Tempo in BPM (40 - 300):")
+        if answer != "" and answer + 0 == answer:
+            bpm = clamp(round(answer), 40, 300)
+    elif ask_kind == "rename_t":
+        ask("New name for track '" ~ t_name[ask_arg] ~ "':")
+        if answer != "":
+            undo_push()
+            clean_name(answer)
+            t_name[ask_arg] = ret
+    elif ask_kind == "rename_p":
+        ask("New name for pattern '" ~ p_name[ask_arg] ~ "':")
+        if answer != "":
+            undo_push()
+            clean_name(answer)
+            p_name[ask_arg] = ret
+    elif ask_kind == "load":
+        ask("Paste a Pen DAW save code (leave empty to load the SAVE CODE list):")
+        m_s = answer
+        if m_s == "":
+            for m_i = 1 to save_code.len:
+                m_s = m_s ~ save_code[m_i]
+        if m_s != "":
+            ser()
+            m_v = ser_out
+            playing = 0
+            deser(m_s)
+            if ret == 1:
+                u_stack.add(m_v)
+                r_stack.clear()
+                song_pos = 0
+                play_marker = 0
+                say("Project loaded")
+            else:
+                say("That is not a valid Pen DAW save code")
+    ask_kind = ""

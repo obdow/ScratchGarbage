@@ -1,0 +1,938 @@
+# The four main views: playlist, piano roll, drum step sequencer, mixer.
+
+const PL_RY = 286         # playlist ruler top
+const PL_LY = 264         # first lane top
+const PL_LH = 75          # lane height
+
+const KB_W = 64           # piano roll keyboard width
+const GX = -376           # grid left (MX0 + KB_W)
+const GW = 1016
+const PR_RY = 286         # ruler top
+const PR_GY = 266         # grid top
+const PR_GH = 500
+const PR_VY = -238        # velocity lane top
+const PR_VH = 98
+
+const DS_X0 = -312        # first step column
+const DS_SW = 59          # step pitch
+const DS_Y0 = 262         # first row top
+const DS_RH = 52          # row pitch
+
+var v_P, v_T, v_x, v_y, v_w, v_h, v_i, v_j, v_k, v_n, v_b, v_c, v_t, v_p, v_s, v_lo, v_hi
+var v_drum, v_rh, v_rows, v_ppt, v_L, v_g, v_dt, v_dp, v_hitn, v_min, v_pos, v_any, v_cx
+
+macro is_black(p) = letter(p % 12 + 1, "010100101010") == "1"
+macro note_label(p) = nn[p % 12 + 1] ~ (floor(p / 12) - 1)
+
+# ============================================================================ shared
+
+proc view_header():
+    rect(MX0, MY0, MW, 30, C_PANEL2)
+    hline(MX0, 640, CY0, C_LINE2)
+
+# position of the playhead inside pattern P (-1 if P is not playing)
+proc pat_playpos(P):
+    v_pos = -1
+    if playing == 0 or P < 1:
+        return
+    if song_mode == 0:
+        if P == cur_pat:
+            v_pos = song_pos
+        return
+    for v_k = 1 to c_track.len:
+        if c_pat[v_k] == P and c_start[v_k] * BAR <= song_pos and song_pos < c_start[v_k] * BAR + p_len[P]:
+            v_pos = song_pos - c_start[v_k] * BAR
+
+proc ensure_pattern():
+    if t_cur[sel_t] < 1:
+        undo_push()
+        if t_inst[sel_t] == DRUMKIT:
+            pat_new(sel_t, 1)
+        else:
+            pat_new(sel_t, 2)
+    cur_pat = t_cur[sel_t]
+
+# ============================================================================ playlist
+
+proc clip_at(T, b):
+    ret = 0
+    for v_k = 1 to c_track.len:
+        if c_track[v_k] == T and c_start[v_k] <= b and b < c_start[v_k] + p_len[c_pat[v_k]] / BAR:
+            ret = v_k
+
+proc view_playlist():
+    view_header()
+    button(MX0 + 8, 312, 52, 22, "DRAW", num(pl_tool == 1))
+    if hit == 1:
+        pl_tool = 1
+    if hov == 1:
+        hint = "Draw tool: click a lane to place the selected pattern, drag clips to move them"
+    button(MX0 + 62, 312, 52, 22, "ERASE", num(pl_tool == 2))
+    if hit == 1:
+        pl_tool = 2
+    if hov == 1:
+        hint = "Erase tool: click or drag over clips to delete them (or SHIFT+click with DRAW)"
+    txt("ZOOM", MX0 + 128, 301, 9, TX_FAINT)
+    button(MX0 + 160, 312, 22, 22, "-", 0)
+    if hit == 1:
+        pl_bw = max(16, pl_bw - 8)
+    button(MX0 + 184, 312, 22, 22, "+", 0)
+    if hit == 1:
+        pl_bw = min(128, pl_bw + 8)
+    txt("PLACING", MX0 + 222, 301, 9, TX_FAINT)
+    if cur_pat > 0:
+        txt(p_name[cur_pat], MX0 + 270, 301, 11, TX_TRACK + sel_t)
+    else:
+        txt("new pattern for " ~ t_name[sel_t], MX0 + 270, 301, 11, TX_DIM)
+    txtr("double-click a clip to edit it", 632, 301, 10, TX_FAINT)
+    pl_sx = max(0, pl_sx + scroll_v + scroll_h)
+    # follow the playhead
+    if playing == 1 and song_mode == 1 and drag == "":
+        if song_pos / BAR > pl_sx + MW / pl_bw - 1 or song_pos / BAR < pl_sx:
+            pl_sx = max(0, floor(song_pos / BAR) - 1)
+    # lanes
+    clip_to(MX0, PL_RY, MW, 622)
+    for v_T = 1 to NTRK:
+        v_y = PL_LY - (v_T - 1) * PL_LH
+        if v_T % 2 == 0:
+            rect(MX0, v_y, MW, PL_LH, "#18191e")
+        else:
+            rect(MX0, v_y, MW, PL_LH, "#1b1c22")
+        if v_T == sel_t:
+            rect_t(MX0, v_y, MW, PL_LH, tcol[v_T], 93)
+        rect(MX0, v_y, 3, PL_LH, tcol[v_T])
+        hline(MX0, 640, v_y - PL_LH, C_LINE)
+    v_n = ceil(MW / pl_bw) + 1
+    for v_i = 0 to v_n:
+        v_b = pl_sx + v_i
+        v_x = MX0 + v_i * pl_bw
+        if v_b % 4 == 0:
+            vline(v_x, PL_LY, MYB, C_LINE3)
+        elif pl_bw >= 20:
+            vline(v_x, PL_LY, MYB, C_LINE2)
+    if loop_on == 1:
+        rect_t(MX0 + (loop_s - pl_sx) * pl_bw, PL_LY, (loop_e - loop_s) * pl_bw, 600, C_ACC, 94)
+    # clips
+    for v_c = 1 to c_track.len:
+        v_T = c_track[v_c]
+        v_P = c_pat[v_c]
+        v_x = MX0 + (c_start[v_c] - pl_sx) * pl_bw
+        v_w = p_len[v_P] / BAR * pl_bw
+        if v_x < 640 and v_x + v_w > MX0:
+            v_y = PL_LY - (v_T - 1) * PL_LH - 3
+            rect(v_x + 1, v_y, v_w - 2, PL_LH - 6, tcold[v_T])
+            rect(v_x + 1, v_y, v_w - 2, 15, tcol[v_T])
+            if v_c == pl_sel:
+                outline(v_x + 1, v_y, v_w - 2, PL_LH - 6, C_WHITE)
+            if v_x > MX0 - 4 and v_w > 34:
+                txt(p_name[v_P], v_x + 5, v_y - 8, 9, TX_DARK)
+            clip_preview(v_x + 3, v_y - 19, v_w - 6, PL_LH - 28, v_P, v_T)
+    # playhead
+    if song_mode == 1:
+        v_x = MX0 + (song_pos / BAR - pl_sx) * pl_bw
+        if v_x >= MX0 and v_x <= 640:
+            line(v_x, PL_LY, v_x, MYB, 2, C_GREEN)
+    # ruler
+    rect(MX0, PL_RY, MW, 22, C_PANEL)
+    if loop_on == 1:
+        rect(MX0 + (loop_s - pl_sx) * pl_bw, PL_RY, (loop_e - loop_s) * pl_bw, 5, C_ACC)
+    else:
+        rect(MX0 + (loop_s - pl_sx) * pl_bw, PL_RY, (loop_e - loop_s) * pl_bw, 5, C_LINE3)
+    for v_i = 0 to v_n:
+        v_b = pl_sx + v_i
+        v_x = MX0 + v_i * pl_bw
+        if pl_bw >= 28 or v_b % 4 == 0:
+            txt(v_b + 1, v_x + 3, 273, 9, TX_DIM)
+    v_x = MX0 + (play_marker / BAR - pl_sx) * pl_bw
+    if v_x >= MX0:
+        tri(v_x + 3, 272, 7, C_GREEN)
+    hline(MX0, 640, PL_LY, C_LINE2)
+    clip_all()
+    pl_interact()
+
+# mini piano-roll drawn inside a clip
+proc clip_preview(x, y, w, h, P, T):
+    if p_count[P] == 0:
+        return
+    v_lo = 999
+    v_hi = -999
+    v_j = p_first[P]
+    repeat p_count[P]:
+        v_lo = min(v_lo, n_pitch[v_j])
+        v_hi = max(v_hi, n_pitch[v_j])
+        v_j += 1
+    v_lo -= 1
+    v_hi += 1
+    v_j = p_first[P]
+    v_L = p_len[P]
+    pencolor(tcol[T])
+    pensize(2)
+    repeat p_count[P]:
+        v_t = x + n_start[v_j] / v_L * w
+        v_p = y - (v_hi - n_pitch[v_j]) / (v_hi - v_lo) * h
+        if v_t > cl_x1 and v_t < cl_x2:
+            goto(v_t, v_p)
+            pendown()
+            goto(min(v_t + max(1, n_len[v_j] / v_L * w - 1), cl_x2), v_p)
+            penup()
+        v_j += 1
+
+proc pl_interact():
+    if click == 1 and inside(MX0, PL_RY, MW, 22):
+        click = 0
+        drag = "ruler"
+        drag_v0 = floor((mx - MX0) / pl_bw) + pl_sx
+        drag_moved = 0
+    if drag == "ruler":
+        v_t = max(0, floor((mx - MX0) / pl_bw) + pl_sx)
+        if v_t != drag_v0:
+            drag_moved = 1
+            loop_s = min(v_t, drag_v0)
+            loop_e = max(v_t, drag_v0) + 1
+            loop_on = 1
+        if rel == 1 and drag_moved == 0:
+            play_marker = drag_v0 * BAR
+            song_pos = play_marker
+            seek_req = 1
+            if song_mode == 0:
+                song_mode = 1
+    if inside(MX0, PL_LY, MW, 600):
+        v_T = clamp(floor((PL_LY - my) / PL_LH) + 1, 1, NTRK)
+        v_b = floor((mx - MX0) / pl_bw) + pl_sx
+        if hint == "":
+            hint = t_name[v_T] ~ "  -  bar " ~ (v_b + 1)
+        if click == 1:
+            click = 0
+            clip_at(v_T, v_b)
+            if pl_tool == 2 or shift == 1:
+                drag = "erase"
+                drag_moved = 0
+            elif ret > 0:
+                pl_sel = ret
+                sel_t = v_T
+                t_cur[v_T] = c_pat[ret]
+                cur_pat = c_pat[ret]
+                if dbl == 1:
+                    open_editor()
+                else:
+                    drag = "clip"
+                    drag_off = v_b - c_start[ret]
+                    drag_moved = 0
+            else:
+                sel_t = v_T
+                undo_push()
+                if t_cur[v_T] < 1:
+                    if t_inst[v_T] == DRUMKIT:
+                        pat_new(v_T, 1)
+                    else:
+                        pat_new(v_T, 2)
+                c_track.add(v_T)
+                c_start.add(max(0, v_b))
+                c_pat.add(t_cur[v_T])
+                pl_sel = c_track.len
+                drag = "clip"
+                drag_off = 0
+                drag_moved = 1
+        if drag == "erase":
+            clip_at(v_T, v_b)
+            if ret > 0:
+                if drag_moved == 0:
+                    undo_push()
+                    drag_moved = 1
+                clip_del(ret)
+    if drag == "clip" and pl_sel > 0:
+        v_t = max(0, floor((mx - MX0) / pl_bw) + pl_sx - drag_off)
+        if v_t != c_start[pl_sel]:
+            if drag_moved == 0:
+                undo_push()
+                drag_moved = 1
+            c_start[pl_sel] = v_t
+
+# ============================================================================ piano roll
+
+proc view_piano():
+    v_T = sel_t
+    v_P = cur_pat
+    v_drum = num(t_inst[v_T] == DRUMKIT)
+    if v_drum == 1:
+        v_rh = 50
+        pr_top = 9
+    else:
+        v_rh = 14
+        pr_top = clamp(pr_top - scroll_v * 3, 47, 108)
+    v_rows = ceil(PR_GH / v_rh)
+    v_ppt = pr_bw / PPQ
+    v_L = 4 * BAR
+    if v_P > 0:
+        v_L = p_len[v_P]
+    pr_sx = clamp(pr_sx + scroll_h * PPQ, 0, max(0, v_L + BAR - GW / v_ppt))
+    pr_header()
+    # grid rows
+    clip_to(GX, PR_GY, GW, PR_GH)
+    for v_i = 0 to v_rows - 1:
+        v_p = pr_top - v_i
+        v_y = PR_GY - v_i * v_rh
+        if v_drum == 1:
+            if v_i % 2 == 0:
+                rect(GX, v_y, GW, v_rh, "#1d1f25")
+            else:
+                rect(GX, v_y, GW, v_rh, "#1a1b21")
+        else:
+            if is_black(v_p):
+                rect(GX, v_y, GW, v_rh, "#17181d")
+            else:
+                rect(GX, v_y, GW, v_rh, "#1f2127")
+            if v_p % 12 == 0:
+                hline(GX, 640, v_y - v_rh, C_LINE3)
+    # grid columns
+    v_g = 12
+    if v_ppt * 12 < 7:
+        v_g = 48
+    v_t = floor(pr_sx / v_g) * v_g
+    repeat ceil(GW / (v_g * v_ppt)) + 2:
+        v_x = GX + (v_t - pr_sx) * v_ppt
+        if v_t % BAR == 0:
+            vline(v_x, PR_GY, PR_GY - PR_GH, C_LINE3)
+        elif v_t % PPQ == 0:
+            vline(v_x, PR_GY, PR_GY - PR_GH, "#2f323a")
+        else:
+            vline(v_x, PR_GY, PR_GY - PR_GH, "#24262c")
+        v_t += v_g
+    # beyond the end of the pattern
+    v_x = GX + (v_L - pr_sx) * v_ppt
+    if v_x < 640:
+        rect_t(v_x, PR_GY, 640 - v_x, PR_GH, "#000000", 45)
+        vline(v_x, PR_GY, PR_GY - PR_GH, C_ACC)
+    # notes
+    if v_P > 0:
+        v_i = p_first[v_P]
+        repeat p_count[v_P]:
+            v_j = pr_top - n_pitch[v_i]
+            if v_j >= 0 and v_j <= v_rows:
+                v_x = GX + (n_start[v_i] - pr_sx) * v_ppt
+                v_w = max(3, n_len[v_i] * v_ppt - 1)
+                if v_x < 640 and v_x + v_w > GX:
+                    v_y = PR_GY - v_j * v_rh - 1
+                    mixc(v_T, 0.35 + 0.65 * n_vel[v_i] / 127, 31, 33, 39)
+                    rect(v_x, v_y, v_w, v_rh - 2, ret)
+                    if n_sel[v_i] == 1:
+                        outline(max(v_x, GX), v_y, v_w - max(0, GX - v_x), v_rh - 2, C_WHITE)
+                    if v_w > 24 and v_drum == 0 and v_x > GX:
+                        txt(note_label(n_pitch[v_i]), v_x + 3, v_y - 6, 8, TX_DARK)
+            v_i += 1
+    else:
+        txtc("This track has no pattern yet - click in the grid to create one", GX + GW / 2, 0, 13, TX_DIM)
+    # playhead
+    pat_playpos(v_P)
+    if v_pos >= 0:
+        v_x = GX + (v_pos - pr_sx) * v_ppt
+        if v_x >= GX and v_x <= 640:
+            line(v_x, PR_GY, v_x, PR_GY - PR_GH, 2, C_GREEN)
+    # selection box
+    if drag == "box":
+        rect_t(min(drag_x, mx), max(drag_y, my), abs(mx - drag_x), abs(my - drag_y), C_WHITE, 88)
+        outline(min(drag_x, mx), max(drag_y, my), abs(mx - drag_x), abs(my - drag_y), C_WHITE)
+    # keyboard
+    clip_to(MX0, PR_GY, KB_W, PR_GH)
+    for v_i = 0 to v_rows - 1:
+        v_p = pr_top - v_i
+        v_y = PR_GY - v_i * v_rh
+        if v_drum == 1:
+            rect(MX0, v_y, KB_W - 1, v_rh - 1, C_PANEL2)
+            if v_p >= 0:
+                txt(drum_name[v_p + 1], MX0 + 6, v_y - v_rh / 2, 10, TX_WHITE)
+        elif is_black(v_p):
+            rect(MX0, v_y, KB_W - 1, v_rh, "#26282e")
+        else:
+            rect(MX0, v_y, KB_W - 1, v_rh - 1, "#d5d8df")
+        # keys held on the computer keyboard
+        for v_k = 1 to 29:
+            if kb_state[v_k] != 0 and kb_np[v_k] == v_p:
+                rect(MX0 + 20, v_y - 1, KB_W - 22, v_rh - 2, tcol[v_T])
+            if v_p % 12 == 0:
+                txtr(note_label(v_p), MX0 + KB_W - 5, v_y - v_rh / 2, 8, TX_DARK)
+    clip_all()
+    # ruler
+    rect(MX0, PR_RY, MW, 20, C_PANEL)
+    v_t = floor(pr_sx / PPQ) * PPQ
+    repeat ceil(GW / (PPQ * v_ppt)) + 2:
+        v_x = GX + (v_t - pr_sx) * v_ppt
+        if v_x >= GX and v_x < 636:
+            if v_t % BAR == 0:
+                vline(v_x, PR_RY, PR_GY, C_LINE3)
+                txt(v_t / BAR + 1, v_x + 3, 276, 9, TX_DIM)
+            else:
+                vline(v_x, PR_GY + 6, PR_GY, C_LINE3)
+        v_t += PPQ
+    hline(MX0, 640, PR_GY, C_LINE2)
+    # velocity lane
+    rect(MX0, PR_VY, MW, PR_VH, C_PANEL)
+    hline(MX0, 640, PR_VY, C_LINE2)
+    txt("VELOCITY", MX0 + 6, PR_VY - 12, 8, TX_FAINT)
+    if v_P > 0:
+        clip_to(GX, PR_VY, GW, PR_VH)
+        v_i = p_first[v_P]
+        repeat p_count[v_P]:
+            v_x = GX + (n_start[v_i] - pr_sx) * v_ppt + 2
+            if v_x > GX and v_x < 640:
+                v_h = n_vel[v_i] / 127 * (PR_VH - 14)
+                if n_sel[v_i] == 1:
+                    line(v_x, PR_VY - PR_VH + 4, v_x, PR_VY - PR_VH + 4 + v_h, 3, C_WHITE)
+                else:
+                    line(v_x, PR_VY - PR_VH + 4, v_x, PR_VY - PR_VH + 4 + v_h, 3, tcol[v_T])
+                dot(v_x, PR_VY - PR_VH + 4 + v_h, 7, tcol[v_T])
+            v_i += 1
+        clip_all()
+    pr_interact()
+
+proc pr_header():
+    view_header()
+    button(MX0 + 8, 312, 50, 22, "DRAW", num(pr_tool == 1))
+    if hit == 1:
+        pr_tool = 1
+    if hov == 1:
+        hint = "Draw: click to add notes, drag to move, drag the right edge to resize"
+    button(MX0 + 60, 312, 54, 22, "SELECT", num(pr_tool == 2))
+    if hit == 1:
+        pr_tool = 2
+    if hov == 1:
+        hint = "Select: drag a box around notes, then drag them or press DELETE"
+    button(MX0 + 116, 312, 50, 22, "ERASE", num(pr_tool == 3))
+    if hit == 1:
+        pr_tool = 3
+    if hov == 1:
+        hint = "Erase: click or drag over notes (SHIFT+click works with every tool)"
+    button(MX0 + 178, 312, 84, 22, "SNAP " ~ snap_lbl[pr_snap], 0)
+    if hit == 1:
+        pr_snap = pr_snap % snap_val.len + 1
+    if hov == 1:
+        hint = "Grid snap for drawing, moving and quantizing (click to cycle)"
+    txt("ZOOM", MX0 + 272, 301, 9, TX_FAINT)
+    button(MX0 + 304, 312, 22, 22, "-", 0)
+    if hit == 1:
+        pr_bw = max(16, pr_bw - 12)
+    button(MX0 + 328, 312, 22, 22, "+", 0)
+    if hit == 1:
+        pr_bw = min(240, pr_bw + 12)
+    button(MX0 + 362, 312, 56, 22, "QUANT", 2 * num(cur_pat < 1))
+    if hit == 1:
+        pr_quantize(cur_pat)
+    if hov == 1:
+        hint = "Quantize the selected notes (or all notes) to the snap"
+    button(MX0 + 420, 312, 44, 22, "DUP", 2 * num(cur_pat < 1))
+    if hit == 1:
+        pr_dup(cur_pat)
+    if hov == 1:
+        hint = "Duplicate the selected notes right after themselves"
+    button(MX0 + 466, 312, 44, 22, "ALL", 2 * num(cur_pat < 1))
+    if hit == 1:
+        pr_select_all(cur_pat)
+    if cur_pat > 0:
+        txt(p_name[cur_pat], MX0 + 524, 301, 12, TX_TRACK + sel_t)
+        txtr(t_name[sel_t] ~ "  /  " ~ inst_name[t_inst[sel_t]] ~ "  /  " ~ (p_len[cur_pat] / BAR) ~ " bar", 632, 301, 10, TX_DIM)
+
+proc pr_quantize(P):
+    if P < 1:
+        return
+    undo_push()
+    v_any = 0
+    v_i = p_first[P]
+    repeat p_count[P]:
+        v_any += n_sel[v_i]
+        v_i += 1
+    v_i = p_first[P]
+    repeat p_count[P]:
+        if v_any == 0 or n_sel[v_i] == 1:
+            n_start[v_i] = max(0, round(n_start[v_i] / snap) * snap)
+        v_i += 1
+    say("Quantized to " ~ snap_lbl[pr_snap])
+
+proc pr_select_all(P):
+    v_any = 1
+    v_i = p_first[P]
+    repeat p_count[P]:
+        if n_sel[v_i] == 0:
+            v_any = 0
+        v_i += 1
+    v_i = p_first[P]
+    repeat p_count[P]:
+        n_sel[v_i] = 1 - v_any
+        v_i += 1
+
+proc pr_dup(P):
+    group_build(P)
+    if g_idx.len == 0:
+        say("Select some notes first (SELECT tool or ALL)")
+        return
+    v_lo = 999999
+    v_hi = 0
+    for v_k = 1 to g_idx.len:
+        v_lo = min(v_lo, g_s[v_k])
+        v_hi = max(v_hi, g_s[v_k] + g_l[v_k])
+    v_t = v_hi - v_lo
+    if snap > 1:
+        v_t = ceil(v_t / snap) * snap
+    undo_push()
+    sel_clear()
+    for v_k = 1 to g_idx.len:
+        note_add(P, g_s[v_k] + v_t, g_l[v_k], g_p[v_k], n_vel[g_idx[v_k]])
+        n_sel[ret] = 1
+    if v_hi + v_t > p_len[P]:
+        p_len[P] = min(16 * BAR, ceil((v_hi + v_t) / BAR) * BAR)
+
+# remember the selected notes of P (indices + original positions) for dragging
+proc group_build(P):
+    g_idx.clear()
+    g_s.clear()
+    g_p.clear()
+    g_l.clear()
+    v_min = 999999
+    v_i = p_first[P]
+    repeat p_count[P]:
+        if n_sel[v_i] == 1:
+            g_idx.add(v_i)
+            g_s.add(n_start[v_i])
+            g_p.add(n_pitch[v_i])
+            g_l.add(n_len[v_i])
+            v_min = min(v_min, n_start[v_i])
+        v_i += 1
+
+# note under the mouse -> v_hitn (0 = none); also sets v_t (tick) and v_p (pitch)
+proc pr_hit(P):
+    v_t = pr_sx + (mx - GX) / v_ppt
+    v_p = pr_top - floor((PR_GY - my) / v_rh)
+    v_hitn = 0
+    if P < 1:
+        return
+    v_i = p_first[P]
+    repeat p_count[P]:
+        if n_pitch[v_i] == v_p and n_start[v_i] <= v_t and v_t < n_start[v_i] + max(n_len[v_i], 3 / v_ppt):
+            v_hitn = v_i
+        v_i += 1
+
+proc pr_interact():
+    if click == 1 and inside(GX, PR_GY, GW, PR_GH):
+        click = 0
+        ensure_pattern()
+        v_P = cur_pat
+        pr_hit(v_P)
+        if pr_tool == 3 or shift == 1:
+            drag = "nerase"
+            drag_moved = 0
+        elif v_hitn > 0:
+            if n_sel[v_hitn] == 0:
+                sel_clear()
+                n_sel[v_hitn] = 1
+            group_build(v_P)
+            drag_t = v_t
+            drag_v0 = v_p
+            drag_x = 0
+            drag_y = 0
+            drag_off = v_hitn
+            drag_moved = 0
+            pr_len = n_len[v_hitn]
+            if pr_tool == 1 and (n_start[v_hitn] + n_len[v_hitn] - v_t) * v_ppt < min(8, n_len[v_hitn] * v_ppt / 3):
+                drag = "nresize"
+            else:
+                drag = "nmove"
+            play_note(sel_t, n_pitch[v_hitn], n_vel[v_hitn], 0.3, 0)
+        elif pr_tool == 2:
+            drag = "box"
+            drag_x = mx
+            drag_y = my
+            if shift == 0:
+                sel_clear()
+        else:
+            undo_push()
+            sel_clear()
+            v_s = max(0, floor(v_t / snap) * snap)
+            note_add(v_P, v_s, pr_len, v_p, pr_vel)
+            n_sel[ret] = 1
+            group_build(v_P)
+            drag_t = v_t
+            drag_v0 = v_p
+            drag_x = 0
+            drag_y = 0
+            drag_off = ret
+            drag_moved = 1
+            drag = "nmove"
+            play_note(sel_t, v_p, pr_vel, 0.3, 0)
+    v_P = cur_pat
+    if v_P > 0 and inside(GX, PR_GY, GW, PR_GH) and drag == "":
+        pr_hit(v_P)
+        if v_drum == 1:
+            hint = drum_name[v_p + 1] ~ "   -   beat " ~ (floor(v_t / PPQ) + 1)
+        else:
+            hint = note_label(v_p) ~ "   -   beat " ~ (floor(v_t / PPQ) + 1)
+    if drag == "nmove":
+        v_t = pr_sx + (mx - GX) / v_ppt
+        v_p = pr_top - floor((PR_GY - my) / v_rh)
+        v_dt = max(0 - v_min, round((v_t - drag_t) / snap) * snap)
+        v_dp = v_p - drag_v0
+        if v_dt != drag_x or v_dp != drag_y:
+            if drag_moved == 0:
+                undo_push()
+                drag_moved = 1
+            for v_k = 1 to g_idx.len:
+                n_start[g_idx[v_k]] = g_s[v_k] + v_dt
+                if v_drum == 1:
+                    n_pitch[g_idx[v_k]] = clamp(g_p[v_k] + v_dp, 0, NDRUM - 1)
+                else:
+                    n_pitch[g_idx[v_k]] = clamp(g_p[v_k] + v_dp, 0, 127)
+            if v_dp != drag_y:
+                play_note(sel_t, n_pitch[drag_off], n_vel[drag_off], 0.25, 0)
+            drag_x = v_dt
+            drag_y = v_dp
+    if drag == "nresize":
+        v_t = pr_sx + (mx - GX) / v_ppt
+        v_dt = round((v_t - drag_t) / snap) * snap
+        if v_dt != drag_x:
+            if drag_moved == 0:
+                undo_push()
+                drag_moved = 1
+            for v_k = 1 to g_idx.len:
+                n_len[g_idx[v_k]] = max(max(snap, 3), g_l[v_k] + v_dt)
+            pr_len = n_len[drag_off]
+            drag_x = v_dt
+    if drag == "nerase" and v_P > 0 and inside(GX, PR_GY, GW, PR_GH):
+        pr_hit(v_P)
+        if v_hitn > 0:
+            if drag_moved == 0:
+                undo_push()
+                drag_moved = 1
+            note_del(v_P, v_hitn)
+    if drag == "box" and rel == 1 and v_P > 0:
+        v_lo = pr_sx + (min(drag_x, mx) - GX) / v_ppt
+        v_hi = pr_sx + (max(drag_x, mx) - GX) / v_ppt
+        v_s = pr_top - floor((PR_GY - max(drag_y, my)) / v_rh)
+        v_n = pr_top - floor((PR_GY - min(drag_y, my)) / v_rh)
+        v_i = p_first[v_P]
+        repeat p_count[v_P]:
+            if n_start[v_i] < v_hi and n_start[v_i] + n_len[v_i] > v_lo and n_pitch[v_i] <= v_s and n_pitch[v_i] >= v_n:
+                n_sel[v_i] = 1
+            v_i += 1
+    # velocity lane
+    if click == 1 and inside(GX, PR_VY, GW, PR_VH) and v_P > 0:
+        click = 0
+        drag = "vel"
+        drag_moved = 0
+    if inside(GX, PR_VY, GW, PR_VH) and drag == "":
+        hint = "Drag up / down over the bars to change note velocities"
+    if drag == "vel":
+        v_s = clamp(round((my - (PR_VY - PR_VH + 4)) / (PR_VH - 14) * 127), 1, 127)
+        v_any = 0
+        v_i = p_first[v_P]
+        repeat p_count[v_P]:
+            v_any += n_sel[v_i]
+            v_i += 1
+        v_i = p_first[v_P]
+        repeat p_count[v_P]:
+            v_x = GX + (n_start[v_i] - pr_sx) * v_ppt + 2
+            if abs(v_x - mx) < 6 and (v_any == 0 or n_sel[v_i] == 1) and n_vel[v_i] != v_s:
+                if drag_moved == 0:
+                    undo_push()
+                    drag_moved = 1
+                n_vel[v_i] = v_s
+                pr_vel = v_s
+            v_i += 1
+    # keyboard
+    if click == 1 and inside(MX0, PR_GY, KB_W, PR_GH):
+        click = 0
+        v_p = pr_top - floor((PR_GY - my) / v_rh)
+        play_note(sel_t, v_p, 100, 0.5, 0)
+    # ruler pans
+    if click == 1 and inside(MX0, PR_RY, MW, 20):
+        click = 0
+        drag = "pan"
+        drag_mx0 = mx
+        drag_v0 = pr_sx
+    if drag == "pan":
+        pr_sx = clamp(drag_v0 - (mx - drag_mx0) / v_ppt, 0, max(0, v_L + BAR - GW / v_ppt))
+
+# ============================================================================ drum step sequencer
+
+proc step_find(P, row, st):
+    ret = 0
+    v_i = p_first[P]
+    repeat p_count[P]:
+        if n_pitch[v_i] == row and n_start[v_i] == st * 12:
+            ret = v_i
+        v_i += 1
+
+proc view_drums():
+    v_T = sel_t
+    v_P = cur_pat
+    view_header()
+    txt("STEP SEQUENCER", MX0 + 10, 301, 11, TX_DIM)
+    if t_inst[v_T] != DRUMKIT:
+        txtc(t_name[v_T] ~ " is not a drum track.", 100, 60, 16, TX_WHITE)
+        txtc("Pick a track that uses the Drum Kit in the track list, or:", 100, 30, 11, TX_DIM)
+        button(-20, 4, 240, 30, "USE THE DRUM KIT ON THIS TRACK", 0)
+        if hit == 1:
+            undo_push()
+            t_inst[v_T] = DRUMKIT
+        button(-20, -32, 240, 30, "OPEN THE PIANO ROLL INSTEAD", 0)
+        if hit == 1:
+            view = VIEW_PIANO
+        return
+    if v_P > 0:
+        v_n = p_len[v_P] / BAR
+    else:
+        v_n = 1
+    ds_page = clamp(ds_page, 0, v_n - 1)
+    button(MX0 + 130, 312, 22, 22, "<", 0)
+    if hit == 1:
+        ds_page = max(0, ds_page - 1)
+    txtc("BAR " ~ (ds_page + 1) ~ " / " ~ v_n, MX0 + 192, 301, 11, TX_WHITE)
+    button(MX0 + 232, 312, 22, 22, ">", 0)
+    if hit == 1:
+        ds_page = min(v_n - 1, ds_page + 1)
+    button(MX0 + 268, 312, 64, 22, "ACCENT", ds_accent)
+    if hit == 1:
+        ds_accent = 1 - ds_accent
+    if hov == 1:
+        hint = "New steps are loud accents while this is on"
+    button(MX0 + 336, 312, 56, 22, "CLEAR", 2 * num(v_P < 1))
+    if hit == 1:
+        undo_push()
+        repeat p_count[v_P]:
+            note_del(v_P, p_first[v_P])
+    if v_P > 0:
+        txt(p_name[v_P], MX0 + 408, 301, 12, TX_TRACK + v_T)
+    txtr("swing " ~ round(swing) ~ "%   -   note lengths / velocities: piano roll", 632, 301, 10, TX_FAINT)
+    # cell values
+    cellv.clear()
+    repeat NDRUM * 16:
+        cellv.add(0)
+    if v_P > 0:
+        v_i = p_first[v_P]
+        repeat p_count[v_P]:
+            v_s = n_start[v_i] / 12 - ds_page * 16
+            if v_s >= 0 and v_s < 16 and v_s == round(v_s) and n_pitch[v_i] >= 0 and n_pitch[v_i] < NDRUM:
+                cellv[n_pitch[v_i] * 16 + v_s + 1] = n_vel[v_i]
+            v_i += 1
+    pat_playpos(v_P)
+    v_cx = -1
+    if v_pos >= 0:
+        v_cx = floor(v_pos / 12) - ds_page * 16
+    # step numbers
+    for v_k = 0 to 15:
+        v_x = DS_X0 + v_k * DS_SW
+        if v_k == v_cx:
+            rect(v_x, 284, DS_SW - 5, 18, C_GREEN)
+            txtc(v_k + 1, v_x + (DS_SW - 5) / 2, 275, 10, TX_DARK)
+        elif v_k % 4 == 0:
+            txtc(v_k + 1, v_x + (DS_SW - 5) / 2, 275, 10, TX_WHITE)
+        else:
+            txtc(v_k + 1, v_x + (DS_SW - 5) / 2, 275, 10, TX_FAINT)
+    for v_j = 0 to NDRUM - 1:
+        v_y = DS_Y0 - v_j * DS_RH
+        rect(MX0 + 6, v_y, 118, DS_RH - 6, C_PANEL2)
+        rect(MX0 + 6, v_y, 3, DS_RH - 6, tcol[v_T])
+        txt(drum_name[v_j + 1], MX0 + 16, v_y - (DS_RH - 6) / 2, 11, TX_WHITE)
+        for v_k = 0 to 15:
+            v_x = DS_X0 + v_k * DS_SW
+            v_s = cellv[v_j * 16 + v_k + 1]
+            if v_s > 0:
+                mixc(v_T, 0.3 + 0.7 * v_s / 127, 42, 45, 53)
+                rect(v_x, v_y, DS_SW - 5, DS_RH - 6, ret)
+            elif floor(v_k / 4) % 2 == 0:
+                rect(v_x, v_y, DS_SW - 5, DS_RH - 6, "#2a2d35")
+            else:
+                rect(v_x, v_y, DS_SW - 5, DS_RH - 6, "#22252b")
+            if v_k == v_cx:
+                rect_t(v_x, v_y, DS_SW - 5, DS_RH - 6, C_WHITE, 80)
+    txt("Click steps to toggle them, drag to paint.  Click a drum name to hear it.", MX0 + 10, -292, 10, TX_FAINT)
+    # interaction
+    if click == 1 and inside(MX0 + 6, DS_Y0, 118, NDRUM * DS_RH):
+        click = 0
+        play_note(v_T, floor((DS_Y0 - my) / DS_RH), 110, 0.5, 0)
+    if inside(DS_X0, DS_Y0, 16 * DS_SW, NDRUM * DS_RH):
+        v_j = floor((DS_Y0 - my) / DS_RH)
+        v_k = floor((mx - DS_X0) / DS_SW)
+        if drag == "":
+            hint = drum_name[v_j + 1] ~ "  -  step " ~ (v_k + 1)
+        if click == 1:
+            click = 0
+            ensure_pattern()
+            v_P = cur_pat
+            undo_push()
+            step_find(v_P, v_j, ds_page * 16 + v_k)
+            if ret > 0:
+                drag_v0 = 0
+            else:
+                drag_v0 = 1
+                play_note(v_T, v_j, 110, 0.5, 0)
+            drag = "paint"
+            drag_x = v_k
+            drag_y = v_j
+        if drag == "paint" and v_P > 0:
+            # fill every step between the last mouse position and this one
+            v_s = drag_x
+            v_n = drag_y
+            repeat max(abs(v_k - drag_x), abs(v_j - drag_y)) + 1:
+                ds_paint(v_P, round(v_n), round(v_s))
+                if v_k > v_s:
+                    v_s += 1
+                elif v_k < v_s:
+                    v_s -= 1
+                if v_j > v_n:
+                    v_n += 1
+                elif v_j < v_n:
+                    v_n -= 1
+            drag_x = v_k
+            drag_y = v_j
+
+proc ds_paint(P, row, st):
+    step_find(P, row, ds_page * 16 + st)
+    if drag_v0 == 0 and ret > 0:
+        note_del(P, ret)
+    elif drag_v0 == 1 and ret == 0:
+        if ds_accent == 1:
+            note_add(P, (ds_page * 16 + st) * 12, 12, row, 127)
+        else:
+            note_add(P, (ds_page * 16 + st) * 12, 12, row, 96)
+
+# ============================================================================ mixer
+
+proc view_mixer():
+    view_header()
+    txt("MIXER", MX0 + 10, 301, 11, TX_DIM)
+    txtr("Drag faders, pan and the FINE / REL boxes. PITCH transposes the track in semitones, FINE detunes in cents, REL is the release (fade-out) time.", 632, 301, 9, TX_FAINT)
+    for v_T = 1 to NTRK:
+        mixer_strip(v_T)
+    # master
+    v_x = MX0 + 8 + 8 * 118
+    rect(v_x, 278, 110, 608, C_PANEL)
+    rect(v_x, 278, 110, 5, C_ACC)
+    txtc("MASTER", v_x + 55, 262, 12, TX_ACC)
+    txtc(voices ~ " voices", v_x + 55, 244, 10, TX_DIM)
+    v_s = 0
+    for v_k = 1 to NTRK:
+        v_s = max(v_s, t_meter[v_k])
+    fader(v_x, master, v_s, 0)
+    txtc(round(master), v_x + 55, -252, 11, TX_WHITE)
+    if drag == "vol" and drag_t == 0:
+        master = clamp(round((my - (-240)) / 340 * 100), 0, 100)
+
+proc mixer_strip(T):
+    v_x = MX0 + 8 + (T - 1) * 118
+    rect(v_x, 278, 110, 608, C_PANEL)
+    rect(v_x, 278, 110, 5, tcol[T])
+    if T == sel_t:
+        outline(v_x, 278, 110, 608, C_LINE3)
+    area(v_x, 278, 110, 24)
+    if hit == 1:
+        sel_t = T
+    txtc(t_name[T], v_x + 55, 262, 12, TX_TRACK + T)
+    area(v_x + 4, 252, 102, 16)
+    if hit == 1:
+        sel_t = T
+        popup = "inst"
+        popup_t = T
+        popup_x = min(v_x + 4, 640 - 172)
+        popup_y = 236
+    if hov == 1:
+        txtc(inst_name[t_inst[T]], v_x + 55, 244, 10, TX_ACC)
+        hint = "Click to change the instrument"
+    else:
+        txtc(inst_name[t_inst[T]], v_x + 55, 244, 10, TX_DIM)
+    # pan
+    txt("PAN", v_x + 8, 222, 8, TX_FAINT)
+    if t_pan[T] == 0:
+        txtr("C", v_x + 102, 222, 9, TX_DIM)
+    elif t_pan[T] < 0:
+        txtr("L" ~ (0 - t_pan[T]), v_x + 102, 222, 9, TX_DIM)
+    else:
+        txtr("R" ~ t_pan[T], v_x + 102, 222, 9, TX_DIM)
+    rect(v_x + 8, 210, 94, 6, C_DARK)
+    vline(v_x + 55, 212, 202, C_LINE3)
+    rect(v_x + 8 + (t_pan[T] + 100) / 200 * 94 - 3, 215, 6, 16, C_ACC)
+    area(v_x + 4, 216, 102, 20)
+    if hit == 1:
+        undo_push()
+        drag = "pan"
+        drag_t = T
+    if drag == "pan" and drag_t == T:
+        v_s = round((mx - (v_x + 8)) / 94 * 200 - 100)
+        if abs(v_s) < 6:
+            v_s = 0
+        t_pan[T] = clamp(v_s, -100, 100)
+    # pitch
+    txt("PITCH", v_x + 8, 186, 8, TX_FAINT)
+    button(v_x + 6, 176, 22, 20, "-", 0)
+    if hit == 1:
+        undo_push()
+        t_tr[T] = max(-24, t_tr[T] - 1)
+    if t_tr[T] > 0:
+        txtc("+" ~ t_tr[T] ~ " st", v_x + 55, 166, 10, TX_WHITE)
+    else:
+        txtc(t_tr[T] ~ " st", v_x + 55, 166, 10, TX_WHITE)
+    button(v_x + 82, 176, 22, 20, "+", 0)
+    if hit == 1:
+        undo_push()
+        t_tr[T] = min(24, t_tr[T] + 1)
+    # fine
+    rect(v_x + 6, 150, 98, 20, C_DARK)
+    txtc("FINE " ~ t_det[T] ~ "c", v_x + 55, 140, 10, TX_WHITE)
+    area(v_x + 6, 150, 98, 20)
+    if hit == 1:
+        undo_push()
+        drag = "fine"
+        drag_t = T
+        drag_v0 = t_det[T]
+        drag_mx0 = mx
+        drag_my0 = my
+    if hov == 1:
+        hint = "Fine tune in cents: drag left / right"
+    if drag == "fine" and drag_t == T:
+        t_det[T] = clamp(round(drag_v0 + (mx - drag_mx0) / 2 + (my - drag_my0) / 2), -50, 50)
+    # release
+    rect(v_x + 6, 126, 98, 20, C_DARK)
+    txtc("REL " ~ t_rel[T] ~ "ms", v_x + 55, 116, 10, TX_WHITE)
+    area(v_x + 6, 126, 98, 20)
+    if hit == 1:
+        undo_push()
+        drag = "relt"
+        drag_t = T
+        drag_v0 = t_rel[T]
+        drag_mx0 = mx
+        drag_my0 = my
+    if hov == 1:
+        hint = "Release: how long notes fade out after they end - drag left / right"
+    if drag == "relt" and drag_t == T:
+        t_rel[T] = clamp(round((drag_v0 + (mx - drag_mx0) * 5 + (my - drag_my0) * 5) / 10) * 10, 0, 2000)
+    # fader + meter
+    fader(v_x, t_vol[T], t_meter[T], T)
+    if drag == "vol" and drag_t == T:
+        t_vol[T] = clamp(round((my - (-240)) / 340 * 100), 0, 100)
+    txtc(round(t_vol[T]), v_x + 55, -252, 11, TX_WHITE)
+    button(v_x + 6, -266, 47, 22, "MUTE", t_mute[T])
+    if hit == 1:
+        t_mute[T] = 1 - t_mute[T]
+    button_c(v_x + 57, -266, 47, 22, "SOLO", t_solo[T], "#ffd43b")
+    if hit == 1:
+        t_solo[T] = 1 - t_solo[T]
+    txtc("TRACK " ~ T, v_x + 55, -306, 9, TX_FAINT)
+
+# vertical fader (value 0-100) with a level meter; id 0 = master
+proc fader(x, value, level, id):
+    line(x + 34, 98, x + 34, -238, 4, C_DARK)
+    for v_k = 0 to 10:
+        hline(x + 22, x + 28, 100 - v_k * 34, C_LINE3)
+    v_y = -240 + value / 100 * 340
+    rect(x + 20, v_y + 8, 28, 16, C_BTNH)
+    hline(x + 22, x + 46, v_y, C_ACC)
+    rect(x + 66, 100, 12, 340, C_DARK)
+    v_h = min(340, level / 100 * 340)
+    if v_h > 1:
+        rect(x + 68, -240 + v_h, 8, v_h, C_GREEN)
+        if v_h > 290:
+            rect(x + 68, -240 + v_h, 8, v_h - 290, "#ffd43b")
+    area(x + 14, 104, 70, 348)
+    if hit == 1:
+        undo_push()
+        drag = "vol"
+        drag_t = id
+    if hov == 1:
+        hint = "Volume: drag the fader"
